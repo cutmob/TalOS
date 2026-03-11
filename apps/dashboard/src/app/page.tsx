@@ -235,9 +235,9 @@ export default function DashboardPage() {
   // ── Voice WebSocket ───────────────────────────────────────────────────────
 
   const connectVoiceWS = useCallback((): WebSocket => {
-    const host = window.location.hostname;
-    const port = process.env.NEXT_PUBLIC_VOICE_GATEWAY_PORT ?? '3002';
-    const ws = new WebSocket(`ws://${host}:${port}/ws/voice`);
+    const voiceUrl = process.env.NEXT_PUBLIC_VOICE_GATEWAY_URL
+      ?? `ws://${window.location.hostname}:3002`;
+    const ws = new WebSocket(`${voiceUrl}/ws/voice`);
     wsRef.current = ws;
     ws.onopen = () => setIsVoiceConnected(true);
     ws.onclose = () => { setIsVoiceConnected(false); wsRef.current = null; };
