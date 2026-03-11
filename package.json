@@ -11,8 +11,9 @@
     "services/*"
   ],
   "scripts": {
+    "build": "npm -w apps/dashboard run build",
+    "start": "npm -w apps/dashboard run start",
     "dev": "turbo dev",
-    "build": "turbo build",
     "test": "turbo test",
     "lint": "turbo lint",
     "clean": "turbo clean",
