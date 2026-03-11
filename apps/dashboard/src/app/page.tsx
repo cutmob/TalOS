@@ -130,6 +130,7 @@ export default function DashboardPage() {
   const [transcript, setTranscript] = useState('');
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [activeAgents, setActiveAgents] = useState<Set<string>>(new Set());
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [greeting] = useState<Pair>(pickGreeting);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -150,6 +151,38 @@ export default function DashboardPage() {
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
   }, []);
+
+  // ── Voice output ─────────────────────────────────────────────────────────
+
+  // Play PCM 24kHz audio from Nova Sonic (base64)
+  const playPCM24k = useCallback((b64: string) => {
+    try {
+      const raw = atob(b64);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      const pcm16 = new Int16Array(bytes.buffer);
+      const float32 = new Float32Array(pcm16.length);
+      for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
+      const ctx = new AudioContext({ sampleRate: 24000 });
+      const buf = ctx.createBuffer(1, float32.length, 24000);
+      buf.copyToChannel(float32, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start();
+      src.onended = () => ctx.close();
+    } catch { /* audio decode error — ignore */ }
+  }, []);
+
+  // Fallback TTS for text-submitted responses (no Sonic session)
+  const speak = useCallback((text: string) => {
+    if (!voiceEnabled || typeof window === 'undefined' || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 1.05;
+    utter.pitch = 1.0;
+    window.speechSynthesis.speak(utter);
+  }, [voiceEnabled]);
 
   // ── Submit command ────────────────────────────────────────────────────────
 
@@ -191,6 +224,9 @@ export default function DashboardPage() {
             : t
         )
       );
+
+      // Speak the response if voice is enabled and not in a Sonic session
+      if (data.message && !isListening) speak(data.message);
     } catch (err) {
       setTasks((prev) =>
         prev.map((t) =>
@@ -243,13 +279,26 @@ export default function DashboardPage() {
     ws.onclose = () => { setIsVoiceConnected(false); wsRef.current = null; };
     ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data as string) as { type: string; intent?: { text?: string } };
+        const msg = JSON.parse(ev.data as string) as {
+          type: string;
+          intent?: { text?: string };
+          data?: { audio?: string };
+          result?: { message?: string };
+        };
         if (msg.type === 'intent' && msg.intent?.text) setTranscript(msg.intent.text);
         if (msg.type === 'command' && msg.intent?.text) {
           const text = msg.intent.text;
           setTranscript('');
           setCommand(text);
           setTimeout(() => submitCommand(text), 500);
+        }
+        // Nova Sonic audio output — play it
+        if (msg.type === 'audioOutput' && msg.data?.audio && voiceEnabled) {
+          playPCM24k(msg.data.audio);
+        }
+        // Task result from voice pipeline
+        if (msg.type === 'task_result' && msg.result?.message) {
+          speak(msg.result.message);
         }
       } catch { /* ignore */ }
     };
@@ -452,6 +501,39 @@ export default function DashboardPage() {
                 background: '#22c55e',
               }} />
             )}
+          </button>
+
+          {/* Voice response toggle */}
+          <button
+            onClick={() => setVoiceEnabled((v) => !v)}
+            aria-label={voiceEnabled ? 'Disable voice responses' : 'Enable voice responses'}
+            title={voiceEnabled ? 'Voice on' : 'Voice off'}
+            style={{
+              position: 'absolute',
+              right: -52,
+              width: 32, height: 32,
+              borderRadius: '50%',
+              background: 'transparent',
+              border: `1px solid ${voiceEnabled ? '#555' : '#1a1a1a'}`,
+              color: voiceEnabled ? '#888' : '#333',
+              cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'all 0.3s',
+              outline: 'none',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              {voiceEnabled ? (
+                <>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                </>
+              ) : (
+                <line x1="23" y1="9" x2="17" y2="15" />
+              )}
+            </svg>
           </button>
         </div>
 

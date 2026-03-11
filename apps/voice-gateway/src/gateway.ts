@@ -64,6 +64,8 @@ async function start() {
         },
       }));
 
+      const apiServerUrl = process.env.API_SERVER_URL ?? 'http://localhost:3001';
+
       socket.on('message', async (data: Buffer) => {
         try {
           const message = JSON.parse(data.toString());
@@ -84,6 +86,40 @@ async function start() {
               if (intent.isComplete) {
                 socket.send(JSON.stringify({ type: 'command', intent, timestamp: Date.now() }));
               }
+              break;
+            }
+
+            case 'tool_use': {
+              // Nova Sonic wants to call a tool — execute via the API server
+              const { toolName, toolUseId, input } = message;
+              let result: Record<string, unknown> = {};
+
+              if (toolName === 'executeCommand') {
+                try {
+                  const res = await fetch(`${apiServerUrl}/api/tasks/submit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ input: input.command, sessionId: `voice_${Date.now()}` }),
+                    signal: AbortSignal.timeout(30_000),
+                  });
+                  result = await res.json() as Record<string, unknown>;
+                  // Notify dashboard of the task
+                  socket.send(JSON.stringify({ type: 'task_result', result }));
+                } catch (err) {
+                  result = { error: String(err), status: 'failed' };
+                }
+              } else if (toolName === 'getTaskStatus') {
+                try {
+                  const res = await fetch(`${apiServerUrl}/api/metrics`);
+                  result = await res.json() as Record<string, unknown>;
+                } catch {
+                  result = { status: 'unknown' };
+                }
+              }
+
+              // Send tool result back to Nova Sonic — it will speak the response
+              const toolEvents = sonicClient.buildToolResultEvents(toolUseId, result);
+              socket.send(JSON.stringify({ type: 'bedrock_events', events: toolEvents }));
               break;
             }
 
