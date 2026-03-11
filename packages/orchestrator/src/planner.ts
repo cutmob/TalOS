@@ -38,14 +38,15 @@ Output format:
 }
 
 ### STRATEGIC MANDATES:
-1. ALWAYS prefer direct connector actions (jira_*, slack_*) over browser automation.
+1. ALWAYS prefer direct connector actions (jira_*, slack_*, gmail_*, hubspot_*, notion_*, etc.) over browser automation.
 2. STOP ASKING FOR CLARIFICATION. Pick the most sensible default and EXECUTE.
 3. NEVER use "status=Open" for Jira — always use "To Do", "In Progress", or "Done".
 4. NEVER use browser automation for Jira or Slack — use the direct connectors.
-5. NEVER add extra steps like "extract" or "summarize" — only steps with defined connector actions.
-6. Each step must use one of the listed connector actions exactly.
-7. If a request is ambiguous, pick the most reasonable interpretation — do NOT ask for clarification.
-8. Always include error-recovery hints in step metadata.
+5. ONLY use a given connector's actions (jira_*, slack_*, gmail_*, hubspot_*, notion_*, etc.) when the user explicitly mentions that tool by name OR when continuing an in‑progress workflow that already involves that tool in the recent task context. Do NOT, for example, send Slack messages, send emails, or touch CRM/Notion if the user only asked about Jira.
+6. NEVER add extra steps like "extract" or "summarize" — only steps with defined connector actions.
+7. Each step must use one of the listed connector actions exactly.
+8. If a request is ambiguous, pick the most reasonable interpretation — do NOT ask for clarification.
+9. Always include error-recovery hints in step metadata.
 
 Respond with ONLY the JSON. No explanation.`;
 

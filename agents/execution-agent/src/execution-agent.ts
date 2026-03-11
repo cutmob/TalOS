@@ -195,10 +195,23 @@ export class ExecutionAgent extends BaseAgent {
   }
 
   private async extract(task: AgentTask): Promise<unknown> {
-    this.validateTask(task, ['target']);
+    // Be defensive: planner sometimes omits target for extract steps.
+    const target = (task.parameters.target as string | undefined)
+      ?? (task.parameters.field as string | undefined)
+      ?? null;
+
+    if (!target) {
+      // Gracefully skip instead of throwing so the overall task doesn't fail.
+      return {
+        action: 'extract',
+        status: 'skipped',
+        reason: 'No target provided for extract action',
+      };
+    }
+
     return this.runAction(task.sessionId, {
       action: 'extract',
-      target: task.parameters.target,
+      target,
     });
   }
 
