@@ -248,4 +248,10 @@ Deployed on Railway (4 services: dashboard, api-server, voice-gateway, automatio
 
 ---
 
+## License
+
+TalOS is dual-licensed under **AGPL-3.0** and a **commercial license**. See [LICENSE](./LICENSE) and [LICENSE-COMMERCIAL.md](./LICENSE-COMMERCIAL.md) for details.
+
+---
+
 *TalOS — The AI Operating System | Amazon Nova Hackathon 2026 | #AmazonNova*

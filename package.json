@@ -2,6 +2,7 @@
   "name": "talos",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "description": "TalOS — The AI Operating System. Voice-controlled AI that runs enterprise software for you.",
   "workspaces": [
     "apps/*",
