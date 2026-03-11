@@ -1,7 +1,6 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  output: 'standalone',
   // Proxy all /api/* requests to the Fastify API server
   async rewrites() {
     return [

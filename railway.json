@@ -5,7 +5,7 @@
     "buildCommand": "npm run build:dashboard"
   },
   "deploy": {
-    "startCommand": "node apps/dashboard/.next/standalone/server.js",
+    "startCommand": "npm -w apps/dashboard run start",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }
