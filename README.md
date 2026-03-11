@@ -1,6 +1,6 @@
 # TalOS — The AI Operating System
 
-> **Amazon Nova Hackathon Submission** | [Live Demo](https://dashboard-production-2c46.up.railway.app) | #AmazonNova
+> **Amazon Nova Hackathon Submission** | #AmazonNova
 
 **TalOS is a voice-controlled AI orchestration platform that turns natural language commands into automated enterprise workflows.** Say "create a Jira ticket for the login bug" or "send a Slack update to the team" and TalOS plans, executes, and recovers autonomously.
 
@@ -217,14 +217,9 @@ Terraform configurations for DynamoDB, S3, EventBridge, and ECS are in [`/infra/
 
 ---
 
-## Live Deployment
+## Deployment
 
-| Service | URL |
-|---------|-----|
-| Dashboard | https://dashboard-production-2c46.up.railway.app |
-| API Server | https://api-server-production-b39c.up.railway.app |
-| Voice Gateway | https://voice-gateway-production-ef80.up.railway.app |
-| Automation Runner | Internal (Railway private networking) |
+Deployed on Railway (4 services: dashboard, api-server, voice-gateway, automation-runner). See demo video for live walkthrough.
 
 ---
 
