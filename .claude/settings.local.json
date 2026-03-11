@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:aws.amazon.com)",
+      "WebFetch(domain:dev.classmethod.jp)"
+    ]
+  }
+}

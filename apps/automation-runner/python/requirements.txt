@@ -1,0 +1,4 @@
+# Nova Act SDK — Python-only browser automation by Amazon
+# Requires Python 3.10+
+# Ref: https://pypi.org/project/nova-act/
+nova-act>=3.1.0

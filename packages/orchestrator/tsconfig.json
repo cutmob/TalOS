@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../task-graph" },
+    { "path": "../agent-runtime" },
+    { "path": "../workflow-engine" },
+    { "path": "../memory-engine" }
+  ]
+}

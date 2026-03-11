@@ -1,0 +1,21 @@
+{
+  "name": "@operon/orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@operon/task-graph": "*",
+    "@operon/agent-runtime": "*",
+    "@operon/workflow-engine": "*",
+    "@operon/memory-engine": "*",
+    "@aws-sdk/client-bedrock-runtime": "^3.750.0"
+  }
+}

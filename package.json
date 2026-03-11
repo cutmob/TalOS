@@ -1,0 +1,36 @@
+{
+  "name": "talos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TalOS — The AI Operating System. Voice-controlled AI that runs enterprise software for you.",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "agents/*",
+    "connectors/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "clean": "turbo clean",
+    "dev:api": "npm -w apps/api-server run dev",
+    "dev:voice": "npm -w apps/voice-gateway run dev",
+    "dev:runner": "npm -w apps/automation-runner run dev",
+    "dev:dashboard": "npm -w apps/dashboard run dev"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "vitest": "^3.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

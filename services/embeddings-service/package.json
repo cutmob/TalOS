@@ -1,0 +1,13 @@
+{
+  "name": "@operon/embeddings-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": { "build": "tsc", "dev": "tsc --watch", "clean": "rm -rf dist" },
+  "dependencies": {
+    "@operon/memory-engine": "*",
+    "@aws-sdk/client-bedrock-runtime": "^3.750.0"
+  }
+}

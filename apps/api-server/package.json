@@ -1,0 +1,37 @@
+{
+  "name": "@operon/api-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "vitest",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@operon/orchestrator": "*",
+    "@operon/agent-runtime": "*",
+    "@operon/task-graph": "*",
+    "@operon/workflow-engine": "*",
+    "@operon/memory-engine": "*",
+    "@operon/embeddings-service": "*",
+    "@operon/workflow-db": "*",
+    "@operon/orchestrator-agent": "*",
+    "@operon/research-agent": "*",
+    "@operon/execution-agent": "*",
+    "@operon/recovery-agent": "*",
+    "@operon/execution-monitor": "*",
+    "fastify": "^5.2.0",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0",
+    "vitest": "^3.0.0"
+  }
+}
