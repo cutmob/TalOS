@@ -1,10 +1,16 @@
 # TalOS — The AI Operating System
 
-> **Amazon Nova Hackathon Submission** — Enterprise-grade voice-controlled AI orchestration platform powered entirely by Amazon Nova models.
+> **Amazon Nova Hackathon Submission** | [Live Demo](https://dashboard-production-2c46.up.railway.app) | #AmazonNova
 
-## What It Does
+**TalOS is a voice-controlled AI orchestration platform that turns natural language commands into automated enterprise workflows.** Say "create a Jira ticket for the login bug" or "send a Slack update to the team" and TalOS plans, executes, and recovers autonomously.
 
-TalOS listens to your voice, understands your intent, and autonomously operates software on your behalf. Say *"Create a Jira ticket for the login bug and notify the team in Slack"* — TalOS plans the steps, executes them across your tools, and confirms completion, all without you touching a keyboard.
+Built on Amazon Nova's full model portfolio:
+- **Nova 2 Lite** powers the orchestrator's reasoning engine, decomposing complex requests into dependency-aware task graphs executed by specialist agents (research, execution, recovery)
+- **Nova 2 Sonic** enables real-time speech-to-speech voice control via bidirectional streaming
+- **Nova Act** drives browser-based UI automation with natural language, making workflows resilient to UI changes
+- **Nova Multimodal Embeddings** power a three-layer semantic memory system (short-term, long-term, semantic) for self-healing automation — the system learns from failures and improves over time
+
+TalOS connects to Jira, Slack, Gmail, HubSpot, and Notion, orchestrating multi-step workflows across platforms with automatic recovery and correction learning.
 
 ### Powered by Amazon Nova
 
@@ -211,4 +217,15 @@ Terraform configurations for DynamoDB, S3, EventBridge, and ECS are in [`/infra/
 
 ---
 
-*TalOS — Amazon Nova Hackathon 2025*
+## Live Deployment
+
+| Service | URL |
+|---------|-----|
+| Dashboard | https://dashboard-production-2c46.up.railway.app |
+| API Server | https://api-server-production-b39c.up.railway.app |
+| Voice Gateway | https://voice-gateway-production-ef80.up.railway.app |
+| Automation Runner | Internal (Railway private networking) |
+
+---
+
+*TalOS — The AI Operating System | Amazon Nova Hackathon 2026 | #AmazonNova*
