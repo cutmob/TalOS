@@ -1,3 +1,17 @@
+import dotenv from 'dotenv';
+import { resolve } from 'node:path';
+
+// Load .env from monorepo root — walk up from __dirname until we find it
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = resolve(fileURLToPath(import.meta.url), '..');
+let envDir = __dirname;
+while (envDir !== resolve(envDir, '..')) {
+  if (existsSync(resolve(envDir, '.env'))) break;
+  envDir = resolve(envDir, '..');
+}
+dotenv.config({ path: resolve(envDir, '.env') });
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { registerRoutes } from './routes/index.js';

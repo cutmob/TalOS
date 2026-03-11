@@ -11,27 +11,28 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@talos/orchestrator": "*",
-    "@talos/agent-runtime": "*",
-    "@talos/task-graph": "*",
-    "@talos/workflow-engine": "*",
-    "@talos/memory-engine": "*",
-    "@talos/embeddings-service": "*",
-    "@talos/workflow-db": "*",
-    "@talos/orchestrator-agent": "*",
-    "@talos/research-agent": "*",
-    "@talos/execution-agent": "*",
-    "@talos/recovery-agent": "*",
-    "@talos/execution-monitor": "*",
-    "fastify": "^5.2.0",
     "@fastify/cors": "^10.0.0",
     "@fastify/websocket": "^11.0.0",
+    "@talos/agent-runtime": "*",
+    "@talos/embeddings-service": "*",
+    "@talos/execution-agent": "*",
+    "@talos/execution-monitor": "*",
+    "@talos/memory-engine": "*",
+    "@talos/orchestrator": "*",
+    "@talos/orchestrator-agent": "*",
+    "@talos/recovery-agent": "*",
+    "@talos/research-agent": "*",
+    "@talos/task-graph": "*",
+    "@talos/workflow-db": "*",
+    "@talos/workflow-engine": "*",
+    "dotenv": "^17.3.1",
+    "fastify": "^5.2.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "tsx": "^4.19.0",
     "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   }
 }

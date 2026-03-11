@@ -13,3 +13,5 @@ Thumbs.db
 # Raw video source files (not needed in repo)
 apps/*.mp4
 set-railway-vars.mjs
+set-railway-vars.mjs
+check-railway.mjs

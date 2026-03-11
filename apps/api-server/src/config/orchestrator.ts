@@ -18,8 +18,8 @@ export interface SystemServices {
 
 export function createSystemFromEnv(): SystemServices {
   const bedrockRegion = process.env.BEDROCK_REGION ?? 'us-east-1';
-  const novaLiteModelId = process.env.NOVA_LITE_MODEL_ID ?? 'amazon.nova-2-lite-v1:0';
-  const embeddingModelId = process.env.NOVA_EMBEDDINGS_MODEL_ID ?? 'amazon.nova-2-multimodal-embeddings-v1:0';
+  const novaLiteModelId = process.env.NOVA_LITE_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
+  const embeddingModelId = process.env.NOVA_EMBEDDINGS_MODEL_ID ?? 'amazon.nova-embed-image-v1:0';
   const embeddingDimension = parseInt(process.env.NOVA_EMBEDDING_DIMENSION ?? '1024', 10);
   const automationRunnerUrl = process.env.AUTOMATION_RUNNER_URL ?? 'http://localhost:3003';
 
