@@ -2,23 +2,18 @@ import type { TaskGraph } from '@talos/task-graph';
 import { TaskGraphBuilder } from '@talos/task-graph';
 import type { PlanningPrompt } from './types.js';
 
-export const PLANNING_SYSTEM_PROMPT = `You are the TalOS Orchestrator — an AI planning engine that converts natural language commands into structured automation plans.
+export const PLANNING_SYSTEM_PROMPT = `You are TalOS — an AI operating system that automates enterprise workflows across Jira, Slack, Gmail, HubSpot, and Notion.
 
-Your job:
-1. Analyze the user's request
-2. Determine which applications and tools are needed
-3. Break the request into discrete, ordered steps
-4. Output a JSON task graph
+You handle TWO types of input:
 
-Rules:
-- Each step must have a clear action and target
-- Steps that can run in parallel should have no dependency on each other
-- Steps that must run sequentially should declare dependencies
-- Use only the available tools and connectors listed below
-- If a request is ambiguous, pick the most reasonable interpretation
-- Always include error-recovery hints in step metadata
+## Type 1: Conversational (greetings, questions, chitchat)
+If the user is greeting you, asking a question, or making conversation — respond with a friendly, helpful reply.
+Output format:
+{ "chat": true, "response": "Your friendly reply here" }
 
-Output format (JSON):
+## Type 2: Task automation (create, send, update, check, etc.)
+If the user wants you to DO something across their tools — plan it as a task graph.
+Output format:
 {
   "nodes": [
     {
@@ -30,7 +25,17 @@ Output format (JSON):
       "metadata": { "recoveryHint": "retry with alternate URL" }
     }
   ]
-}`;
+}
+
+Rules for task graphs:
+- Each step must have a clear action and target
+- Steps that can run in parallel should have no dependency on each other
+- Steps that must run sequentially should declare dependencies
+- Use only the available tools and connectors listed below
+- If a request is ambiguous, pick the most reasonable interpretation
+- Always include error-recovery hints in step metadata
+
+Respond with ONLY the JSON. No explanation.`;
 
 export function buildPlanningPrompt(input: PlanningPrompt): string {
   const toolList = input.availableTools
@@ -53,10 +58,16 @@ ${contextBlock}
 
 User request: "${input.userRequest}"
 
-Respond with ONLY the JSON task graph. No explanation.`;
+Respond with ONLY the JSON object.`;
 }
 
-export function parsePlanResponse(responseText: string): TaskGraph {
+export interface PlanResult {
+  type: 'chat' | 'taskGraph';
+  chatResponse?: string;
+  taskGraph?: TaskGraph;
+}
+
+export function parsePlanResponse(responseText: string): PlanResult {
   // Extract JSON from response (handle markdown code blocks)
   let jsonStr = responseText.trim();
   const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -66,12 +77,25 @@ export function parsePlanResponse(responseText: string): TaskGraph {
 
   try {
     const parsed = JSON.parse(jsonStr);
-    return TaskGraphBuilder.fromJSON(parsed);
+
+    // Check if Nova returned a chat response instead of a task graph
+    if (parsed.chat === true && parsed.response) {
+      return { type: 'chat', chatResponse: parsed.response };
+    }
+
+    return { type: 'taskGraph', taskGraph: TaskGraphBuilder.fromJSON(parsed) };
   } catch {
-    // If Nova returns malformed JSON, create a single fallback node
-    return TaskGraphBuilder.singleStep({
-      action: 'raw_request',
-      parameters: { rawInput: responseText },
-    });
+    // If Nova returns plain text (not JSON), treat it as a chat response
+    if (responseText.trim().length > 0 && !responseText.includes('"nodes"')) {
+      return { type: 'chat', chatResponse: responseText.trim() };
+    }
+    // Fallback: create a single task node
+    return {
+      type: 'taskGraph',
+      taskGraph: TaskGraphBuilder.singleStep({
+        action: 'raw_request',
+        parameters: { rawInput: responseText },
+      }),
+    };
   }
 }

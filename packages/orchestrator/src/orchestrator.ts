@@ -10,7 +10,7 @@ import type {
   TaskResult,
   PlanningPrompt,
 } from './types.js';
-import { buildPlanningPrompt, PLANNING_SYSTEM_PROMPT, parsePlanResponse } from './planner.js';
+import { buildPlanningPrompt, PLANNING_SYSTEM_PROMPT, parsePlanResponse, type PlanResult } from './planner.js';
 
 /**
  * Central orchestrator that receives user requests, plans task graphs,
@@ -43,8 +43,21 @@ export class Orchestrator {
    * Main entry point: receive a user request, plan, execute, return results.
    */
   async handleRequest(request: OrchestratorRequest): Promise<OrchestratorResponse> {
-    // Phase 1: Plan — use Nova 2 Lite to decompose request into task graph
-    const taskGraph = await this.plan(request);
+    // Phase 1: Plan — use Nova 2 Lite to understand the request
+    const planResult = await this.plan(request);
+
+    // Chat responses skip task execution entirely
+    if (planResult.type === 'chat') {
+      return {
+        sessionId: request.sessionId,
+        taskGraph: { nodes: [], createdAt: Date.now() },
+        status: 'completed',
+        results: [],
+        message: planResult.chatResponse ?? '',
+      };
+    }
+
+    const taskGraph = planResult.taskGraph!;
     this.activeTasks.set(request.sessionId, taskGraph);
 
     // Phase 2: Execute — delegate tasks to specialist agents
@@ -73,7 +86,7 @@ export class Orchestrator {
    * It provides a consistent interface across model providers and supports
    * system prompts, tool use, and structured output natively.
    */
-  private async plan(request: OrchestratorRequest): Promise<TaskGraph> {
+  private async plan(request: OrchestratorRequest): Promise<PlanResult> {
     const userPrompt = buildPlanningPrompt({
       userRequest: request.input,
       availableTools: this.agentPool.getAvailableTools(),

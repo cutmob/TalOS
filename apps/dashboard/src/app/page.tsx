@@ -537,27 +537,43 @@ export default function DashboardPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             {tasks.slice(0, 6).map((task) => (
               <div key={task.id} style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'baseline',
-                gap: '1rem',
                 paddingLeft: '0.75rem',
                 borderLeft: `1.5px solid ${task.status === 'completed' ? '#3a3a3a' : task.status === 'running' ? '#666' : '#3a1a1a'}`,
               }}>
-                <span style={{
-                  fontSize: '0.85rem', fontWeight: 300,
-                  color: task.status === 'running' ? '#e8e8e8' : '#555',
-                  flex: 1, minWidth: 0,
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '1rem',
                 }}>
-                  {task.command}
-                </span>
-                <span style={{
-                  fontSize: '0.67rem', fontWeight: 400, flexShrink: 0,
-                  color: task.status === 'completed' ? '#707070' : task.status === 'running' ? '#a0a0a0' : '#5a3a3a',
-                }}>
-                  {task.status === 'running' ? '···' : fmtMs(task.duration)}
-                </span>
+                  <span style={{
+                    fontSize: '0.85rem', fontWeight: 300,
+                    color: task.status === 'running' ? '#e8e8e8' : '#555',
+                    flex: 1, minWidth: 0,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {task.command}
+                  </span>
+                  <span style={{
+                    fontSize: '0.67rem', fontWeight: 400, flexShrink: 0,
+                    color: task.status === 'completed' ? '#707070' : task.status === 'running' ? '#a0a0a0' : '#5a3a3a',
+                    display: 'flex', alignItems: 'center', gap: '0.4rem',
+                  }}>
+                    {task.status === 'running' ? (
+                      <span className="task-spinner" />
+                    ) : fmtMs(task.duration)}
+                  </span>
+                </div>
+                {task.message && task.status !== 'running' && (
+                  <p style={{
+                    fontSize: '0.8rem', fontWeight: 300,
+                    color: '#707070',
+                    margin: '0.35rem 0 0',
+                    lineHeight: 1.45,
+                  }}>
+                    {task.message}
+                  </p>
+                )}
               </div>
             ))}
           </div>
@@ -578,6 +594,18 @@ export default function DashboardPage() {
         @keyframes blink {
           0%, 100% { opacity: 1; }
           50%       { opacity: 0; }
+        }
+        @keyframes spin {
+          0%   { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        .task-spinner {
+          display: inline-block;
+          width: 10px; height: 10px;
+          border: 1.5px solid #333;
+          border-top-color: #888;
+          border-radius: 50%;
+          animation: spin 0.7s linear infinite;
         }
         .mic-ring {
           position: absolute;
