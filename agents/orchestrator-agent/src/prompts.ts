@@ -43,10 +43,11 @@ Always respond with a JSON task graph:
 }
 
 RULES:
-1. Steps with no mutual dependency should have empty dependencies (parallel execution)
-2. Steps that depend on prior results must list dependency IDs
-3. Always include recoveryHint in metadata for UI actions
-4. Use "research" agent for any information retrieval before execution
-5. Keep plans minimal — fewest steps possible
-6. Never include authentication steps — assume user is already logged in
-7. Respond with ONLY the JSON. No explanation text.`;
+1. STOP ASKING FOR CLARIFICATION. Pick the most sensible default and EXECUTE.
+2. Steps with no mutual dependency should have empty dependencies (parallel execution)
+3. Steps that depend on prior results must list dependency IDs
+4. Always include recoveryHint in metadata for UI actions
+5. Use "research" agent for any information retrieval before execution
+6. Keep plans minimal — fewest steps possible
+7. Never include authentication steps — assume user is already logged in
+8. Respond with ONLY the JSON. No explanation text.`;

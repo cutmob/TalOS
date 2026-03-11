@@ -2,6 +2,32 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const ACTION_LABELS: Record<string, string> = {
+  jira_create_ticket: 'Created Jira ticket',
+  jira_search: 'Searched Jira',
+  jira_update_ticket: 'Updated Jira ticket',
+  slack_send_message: 'Sent Slack message',
+  slack_list_channels: 'Listed Slack channels',
+  gmail_send_email: 'Sent email',
+  gmail_search: 'Searched Gmail',
+  hubspot_create_contact: 'Created HubSpot contact',
+  hubspot_search: 'Searched HubSpot',
+  hubspot_create_deal: 'Created HubSpot deal',
+  notion_create_page: 'Created Notion page',
+  notion_search: 'Searched Notion',
+  browse: 'Browsed web',
+  search: 'Searched',
+  execute: 'Executed task',
+  recover: 'Recovered from error',
+};
+
+function labelAction(action: string | undefined, taskId: string): string {
+  if (!action) return taskId.replace(/_/g, ' ');
+  return ACTION_LABELS[action] ?? action.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface TaskResult {
@@ -18,9 +44,11 @@ interface TaskEntry {
   command: string;
   status: 'running' | 'completed' | 'failed';
   startedAt: number;
+  completedAt?: number;
   duration?: number;
   results?: TaskResult[];
   message?: string;
+  progressLabel?: string;
 }
 
 interface Metrics {
@@ -125,18 +153,24 @@ function MicIcon({ size = 26, color = 'currentColor' }: { size?: number; color?:
 export default function DashboardPage() {
   const [command, setCommand] = useState('');
   const [tasks, setTasks] = useState<TaskEntry[]>([]);
-  const [isListening, setIsListening] = useState(false);
+
   const [isVoiceConnected, setIsVoiceConnected] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [activeAgents, setActiveAgents] = useState<Set<string>>(new Set());
-  const [greeting] = useState<Pair>(pickGreeting);
+  const [taskPanelOpen, setTaskPanelOpen] = useState(false);
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const [micState, setMicState] = useState<'idle' | 'connecting' | 'listening'>('idle');
+  const [greeting, setGreeting] = useState<Pair>(['', '']);
+  useEffect(() => { setGreeting(pickGreeting()); }, []);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeRef = useRef(0);
+  const taskHistoryRef = useRef<TaskEntry[]>([]);
 
   // Poll /api/metrics every 5s
   useEffect(() => {
@@ -151,9 +185,30 @@ export default function DashboardPage() {
     return () => clearInterval(id);
   }, []);
 
+  // Keep history ref in sync (tasks array is the source of truth)
+  useEffect(() => { taskHistoryRef.current = tasks; }, [tasks]);
+
+  // Timeout stuck running tasks after 60s
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setTasks((prev) => prev.map((t) => {
+        if (t.status !== 'running') return t;
+        if (now - t.startedAt > 60_000) {
+          return { ...t, status: 'failed' as const, completedAt: now, duration: now - t.startedAt, message: 'Timed out' };
+        }
+        return t;
+      }));
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
   // ── Voice output ─────────────────────────────────────────────────────────
 
-  // Play PCM 24kHz audio from Nova Sonic (base64)
+  // Shared AudioContext + next-chunk scheduler for glitch-free PCM playback
+  const sonicCtxRef = useRef<AudioContext | null>(null);
+  const nextPlayTimeRef = useRef<number>(0);
+
   const playPCM24k = useCallback((b64: string) => {
     try {
       const raw = atob(b64);
@@ -162,14 +217,24 @@ export default function DashboardPage() {
       const pcm16 = new Int16Array(bytes.buffer);
       const float32 = new Float32Array(pcm16.length);
       for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
-      const ctx = new AudioContext({ sampleRate: 24000 });
+
+      // Reuse single AudioContext — create lazily
+      if (!sonicCtxRef.current || sonicCtxRef.current.state === 'closed') {
+        sonicCtxRef.current = new AudioContext({ sampleRate: 24000 });
+        nextPlayTimeRef.current = 0;
+      }
+      const ctx = sonicCtxRef.current;
+
       const buf = ctx.createBuffer(1, float32.length, 24000);
       buf.copyToChannel(float32, 0);
       const src = ctx.createBufferSource();
       src.buffer = buf;
       src.connect(ctx.destination);
-      src.start();
-      src.onended = () => ctx.close();
+
+      // Schedule chunks sequentially — no gaps, no overlaps
+      const startAt = Math.max(ctx.currentTime, nextPlayTimeRef.current);
+      src.start(startAt);
+      nextPlayTimeRef.current = startAt + buf.duration;
     } catch { /* audio decode error — ignore */ }
   }, []);
 
@@ -180,49 +245,93 @@ export default function DashboardPage() {
     if (!input) return;
 
     const taskId = `task_${Date.now()}`;
-    setTasks((prev) => [{ id: taskId, command: input, status: 'running', startedAt: Date.now() }, ...prev]);
+    const startedAt = Date.now();
+    setTasks((prev) => [{ id: taskId, command: input, status: 'running', startedAt, progressLabel: 'thinking' }, ...prev]);
     setCommand('');
     activeRef.current += 1;
     setActiveAgents(new Set(['orchestrator']));
 
+    const updateTask = (patch: Partial<TaskEntry>) => {
+      setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, ...patch } : t));
+    };
+
     try {
-      const res = await fetch('/api/tasks/submit', {
+      const res = await fetch('/api/tasks/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ input, sessionId: taskId }),
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const duration = Date.now() - (tasks.find((t) => t.id === taskId)?.startedAt ?? Date.now());
 
-      const types = new Set<string>(
-        (data.results as TaskResult[] | undefined ?? []).map((r) => r.agentType)
-      );
-      setActiveAgents(types);
-      setTimeout(() => setActiveAgents(new Set()), 1500);
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalResult: { results?: TaskResult[]; status?: string; message?: string } | null = null;
 
-      const ok =
-        (data.results as TaskResult[] | undefined)?.every((r) => r.status === 'success') ??
-        data.status === 'completed';
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
 
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === taskId
-            ? { ...t, status: ok ? 'completed' : 'failed', duration, results: data.results, message: data.message }
-            : t
-        )
-      );
+          // Parse SSE lines from buffer
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
 
-      // Voice responses handled by Nova Sonic when mic is active
+          let eventType = '';
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith('data: ')) {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === 'progress') {
+                // Update real-time progress label
+                const agentTypes = new Set(activeAgents);
+                if (data.agentType) agentTypes.add(data.agentType);
+                setActiveAgents(agentTypes);
+                updateTask({ progressLabel: data.message });
+              } else if (eventType === 'result') {
+                finalResult = data;
+              } else if (eventType === 'error') {
+                throw new Error(data.message);
+              }
+              eventType = '';
+            }
+          }
+        }
+      }
+
+      const duration = Date.now() - startedAt;
+
+      if (finalResult) {
+        const types = new Set<string>(
+          (finalResult.results ?? []).map((r) => r.agentType)
+        );
+        setActiveAgents(types);
+        setTimeout(() => setActiveAgents(new Set()), 1500);
+
+        const ok =
+          finalResult.results?.every((r) => r.status === 'success') ??
+          finalResult.status === 'completed';
+
+        updateTask({
+          status: ok ? 'completed' : 'failed',
+          completedAt: Date.now(),
+          duration,
+          results: finalResult.results as TaskResult[],
+          message: finalResult.message,
+        });
+      } else {
+        updateTask({ status: 'completed', completedAt: Date.now(), duration });
+      }
     } catch (err) {
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === taskId
-            ? { ...t, status: 'failed', duration: Date.now() - t.startedAt, message: String(err) }
-            : t
-        )
-      );
+      updateTask({
+        status: 'failed',
+        completedAt: Date.now(),
+        duration: Date.now() - startedAt,
+        message: String(err),
+      });
     } finally {
       activeRef.current -= 1;
       if (activeRef.current === 0) setActiveAgents(new Set());
@@ -263,31 +372,53 @@ export default function DashboardPage() {
       ?? `ws://${window.location.hostname}:3002`;
     const ws = new WebSocket(`${voiceUrl}/ws/voice`);
     wsRef.current = ws;
-    ws.onopen = () => setIsVoiceConnected(true);
+    ws.onopen = () => { /* wait for 'ready' before marking live */ };
     ws.onclose = () => { setIsVoiceConnected(false); wsRef.current = null; };
     ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data as string) as {
-          type: string;
-          intent?: { text?: string };
-          data?: { audio?: string };
-          result?: { message?: string };
-        };
-        if (msg.type === 'intent' && msg.intent?.text) setTranscript(msg.intent.text);
-        if (msg.type === 'command' && msg.intent?.text) {
-          const text = msg.intent.text;
-          setTranscript('');
-          setCommand(text);
-          setTimeout(() => submitCommand(text), 500);
+        const msg = JSON.parse(ev.data as string) as Record<string, unknown>;
+        // Session ready — Bedrock init complete, browser can now send audio
+        if (msg.type === 'ready') { setIsVoiceConnected(true); setMicState('listening'); }
+        // Nova Sonic speaking — play PCM audio
+        if (msg.type === 'audio' && msg.audio) playPCM24k(msg.audio as string);
+        // Live transcript of what Nova Sonic understood
+        if (msg.type === 'transcript' && msg.text) setTranscript(msg.text as string);
+        // Nova Sonic executed a command via tool use — show it in task feed
+        if (msg.type === 'task_result') {
+          const result = msg.result as {
+            message?: string;
+            status?: string;
+            results?: TaskResult[];
+          };
+
+          if (result?.message) setTranscript(result.message);
+
+          // Mirror voice commands into the same task history as typed commands
+          const now = Date.now();
+          const taskId = `voice_${now}`;
+          const ok =
+            result.results?.every((r) => r.status === 'success') ??
+            result.status === 'completed';
+
+          setTasks((prev) => [
+            {
+              id: taskId,
+              command: transcript || 'Voice command',
+              status: ok ? 'completed' : 'failed',
+              startedAt: now,
+              completedAt: now,
+              duration: 0,
+              results: result.results as TaskResult[] | undefined,
+              message: result.message,
+            },
+            ...prev,
+          ]);
         }
-        // Nova Sonic audio output — play it (only active during mic session)
-        if (msg.type === 'audioOutput' && msg.data?.audio) {
-          playPCM24k(msg.data.audio);
-        }
+        if (msg.type === 'error') console.error('Voice error:', msg.message);
       } catch { /* ignore */ }
     };
     return ws;
-  }, [submitCommand]);
+  }, [submitCommand, playPCM24k, transcript]);
 
   // ── Mic start / stop ──────────────────────────────────────────────────────
 
@@ -303,6 +434,7 @@ export default function DashboardPage() {
       const source = ctx.createMediaStreamSource(stream);
       const processor = ctx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
+      setMicState('connecting');
       const ws = connectVoiceWS();
       processor.onaudioprocess = (e) => {
         if (ws.readyState !== WebSocket.OPEN) return;
@@ -312,7 +444,7 @@ export default function DashboardPage() {
       };
       source.connect(processor);
       processor.connect(ctx.destination);
-      setIsListening(true);
+      // micState transitions to 'listening' when Bedrock sends 'ready'
     } catch {
       alert('Microphone access denied. Please allow mic permissions and try again.');
     }
@@ -328,9 +460,12 @@ export default function DashboardPage() {
     audioCtxRef.current = null;
     streamRef.current = null;
     wsRef.current = null;
-    setIsListening(false);
     setIsVoiceConnected(false);
+    setMicState('idle');
     setTranscript('');
+    sonicCtxRef.current?.close();
+    sonicCtxRef.current = null;
+    nextPlayTimeRef.current = 0;
   }, []);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -338,7 +473,32 @@ export default function DashboardPage() {
   const fmtMs = (ms?: number) =>
     ms == null ? '' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 
-  const isProcessing = activeAgents.size > 0;
+  const isProcessing = activeAgents.size > 0 || tasks.some((t) => t.status === 'running');
+
+  // Speed up background video while processing
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.playbackRate = isProcessing ? 2 : 1;
+    }
+  }, [isProcessing]);
+
+  const visibleTasks = tasks.filter((t) => {
+    if (t.status === 'running') return true;
+    if (!t.completedAt) return true;
+    return Date.now() - t.completedAt < 6000;
+  });
+
+  // Real-time status from backend progress events
+  const TaskStatus = ({ taskId }: { taskId: string }) => {
+    const task = tasks.find((t) => t.id === taskId);
+    const label = task?.progressLabel ?? 'thinking';
+    return (
+      <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+        <span className="task-spinner" />
+        <span style={{ fontSize: '0.62rem', letterSpacing: '0.04em', textTransform: 'uppercase' as const }}>{label}</span>
+      </span>
+    );
+  };
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -352,6 +512,7 @@ export default function DashboardPage() {
 
       {/* ── Background video ── */}
       <video
+        ref={videoRef}
         autoPlay
         muted
         loop
@@ -435,11 +596,19 @@ export default function DashboardPage() {
 
         {/* Greeting */}
         <div style={{ lineHeight: 1.25, userSelect: 'none' }}>
-          <p style={{ fontSize: 'clamp(1.8rem, 5vw, 2.8rem)', fontWeight: 300, margin: 0, letterSpacing: '-0.02em', color: '#e8e8e8' }}>
+          <p className="greeting-line" style={{
+            fontSize: 'clamp(1.8rem, 5vw, 2.8rem)', fontWeight: 300, margin: 0,
+            letterSpacing: '-0.02em', color: '#e8e8e8',
+            animationDelay: '0.1s',
+          }}>
             {greeting[0]}
           </p>
           {greeting[1] && (
-            <p style={{ fontSize: 'clamp(1.8rem, 5vw, 2.8rem)', fontWeight: 300, margin: 0, letterSpacing: '-0.02em', color: '#383838' }}>
+            <p className="greeting-line" style={{
+              fontSize: 'clamp(1.8rem, 5vw, 2.8rem)', fontWeight: 300, margin: 0,
+              letterSpacing: '-0.02em', color: '#383838',
+              animationDelay: '0.35s',
+            }}>
               {greeting[1]}
             </p>
           )}
@@ -447,46 +616,49 @@ export default function DashboardPage() {
 
         {/* Mic button */}
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {/* Expanding rings when listening */}
-          {isListening && (
-            <>
-              <span className="mic-ring" style={{ animationDelay: '0s' }} />
-              <span className="mic-ring" style={{ animationDelay: '0.6s' }} />
-              <span className="mic-ring" style={{ animationDelay: '1.2s' }} />
-            </>
+          {/* Single subtle ring when actively listening */}
+          {micState === 'listening' && (
+            <span className="mic-ring" />
           )}
           {/* Processing pulse ring */}
-          {isProcessing && !isListening && (
+          {isProcessing && micState === 'idle' && (
             <span className="process-ring" />
           )}
           <button
-            onClick={() => isListening ? stopListening() : startListening()}
-            aria-label={isListening ? 'Stop listening' : 'Start voice command'}
+            onClick={() => micState !== 'idle' ? stopListening() : startListening()}
+            aria-label={micState !== 'idle' ? 'Stop listening' : 'Start voice command'}
+            disabled={micState === 'connecting'}
             style={{
               position: 'relative', zIndex: 1,
               width: 72, height: 72,
               borderRadius: '50%',
               background: 'transparent',
-              border: `1.5px solid ${isListening ? '#999' : isProcessing ? '#55555580' : '#222'}`,
-              color: isListening ? '#c0c0c0' : '#666',
-              cursor: 'pointer',
+              border: `1.5px solid ${micState === 'listening' ? '#555' : micState === 'connecting' ? '#2a2a2a' : isProcessing ? '#55555580' : '#222'}`,
+              color: micState === 'listening' ? '#aaa' : '#555',
+              cursor: micState === 'connecting' ? 'default' : 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'border-color 0.3s, color 0.3s, box-shadow 0.3s',
-              boxShadow: isListening ? '0 0 24px #ffffff08' : 'none',
+              transition: 'border-color 0.4s, color 0.4s',
               outline: 'none',
             }}
           >
-            <MicIcon size={26} />
-            {/* Connected dot */}
-            {isVoiceConnected && (
-              <span style={{
-                position: 'absolute', top: 10, right: 10,
-                width: 5, height: 5, borderRadius: '50%',
-                background: '#22c55e',
-              }} />
-            )}
+            {/* Fade between mic icon and connecting throbber */}
+            <span style={{
+              position: 'absolute',
+              opacity: micState === 'connecting' ? 0 : 1,
+              transition: 'opacity 0.35s ease',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <MicIcon size={22} />
+            </span>
+            <span style={{
+              position: 'absolute',
+              opacity: micState === 'connecting' ? 1 : 0,
+              transition: 'opacity 0.35s ease',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <span className="mic-throbber" />
+            </span>
           </button>
-
         </div>
 
         {/* Live transcript */}
@@ -553,35 +725,28 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      {/* ── Task history ── */}
-      {tasks.length > 0 && (
-        <section style={{
-          maxWidth: 560,
-          width: '100%',
-          margin: '0 auto',
-          padding: '0 2rem 3rem',
+      {/* ── Floating task feed (latest task, auto-fades) ── */}
+      {visibleTasks.length > 0 && !taskPanelOpen && (
+        <div style={{
+          position: 'fixed', bottom: 48, left: '50%', transform: 'translateX(-50%)',
+          maxWidth: 480, width: '90%', zIndex: 10,
         }}>
-          <p style={{
-            fontSize: '0.6rem', fontWeight: 600, color: '#222',
-            textTransform: 'uppercase', letterSpacing: '0.1em',
-            margin: '0 0 1rem',
-          }}>
-            Recent
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {tasks.slice(0, 6).map((task) => (
+          {visibleTasks.slice(0, 2).map((task) => {
+            const fading = task.completedAt && Date.now() - task.completedAt > 4000;
+            const isChat = task.status !== 'running' && (!task.results || task.results.length === 0) && !!task.message;
+            const isExpanded = expandedTaskId === task.id;
+            return (
               <div key={task.id} style={{
-                paddingLeft: '0.75rem',
+                padding: '0.5rem 0.75rem',
                 borderLeft: `1.5px solid ${task.status === 'completed' ? '#3a3a3a' : task.status === 'running' ? '#666' : '#3a1a1a'}`,
-              }}>
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  gap: '1rem',
-                }}>
+                opacity: fading ? 0 : 1,
+                transition: 'opacity 2s ease-out',
+                marginBottom: '0.5rem',
+                cursor: task.status !== 'running' && !isChat ? 'pointer' : 'default',
+              }} onClick={() => task.status !== 'running' && !isChat && setExpandedTaskId(isExpanded ? null : task.id)}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
                   <span style={{
-                    fontSize: '0.85rem', fontWeight: 300,
+                    fontSize: '0.8rem', fontWeight: 300,
                     color: task.status === 'running' ? '#e8e8e8' : '#555',
                     flex: 1, minWidth: 0,
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -589,29 +754,188 @@ export default function DashboardPage() {
                     {task.command}
                   </span>
                   <span style={{
-                    fontSize: '0.67rem', fontWeight: 400, flexShrink: 0,
+                    fontSize: '0.65rem', fontWeight: 400, flexShrink: 0,
                     color: task.status === 'completed' ? '#707070' : task.status === 'running' ? '#a0a0a0' : '#5a3a3a',
-                    display: 'flex', alignItems: 'center', gap: '0.4rem',
+                    display: 'flex', alignItems: 'center', gap: '0.35rem',
                   }}>
                     {task.status === 'running' ? (
-                      <span className="task-spinner" />
-                    ) : fmtMs(task.duration)}
+                      <TaskStatus taskId={task.id} />
+                    ) : task.status === 'completed' ? (
+                      <>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4a7a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        {fmtMs(task.duration)}
+                      </>
+                    ) : (
+                      <>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#7a4a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                        {fmtMs(task.duration)}
+                      </>
+                    )}
                   </span>
                 </div>
-                {task.message && task.status !== 'running' && (
-                  <p style={{
-                    fontSize: '0.8rem', fontWeight: 300,
-                    color: '#707070',
-                    margin: '0.35rem 0 0',
-                    lineHeight: 1.45,
-                  }}>
+                {isChat && (
+                  <p style={{ fontSize: '0.72rem', fontWeight: 300, color: '#606060', margin: '0.3rem 0 0', lineHeight: 1.5 }}>
+                    {task.message}
+                  </p>
+                )}
+                {isExpanded && !isChat && task.results && (
+                  <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    {task.results.map((r) => (
+                      <div key={r.taskId} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.4rem' }}>
+                        {r.status === 'success' ? (
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#4a7a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginTop: 2, flexShrink: 0 }}>
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        ) : (
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#7a4a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginTop: 2, flexShrink: 0 }}>
+                            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                          </svg>
+                        )}
+                        <span style={{ fontSize: '0.7rem', fontWeight: 300, color: r.status === 'success' ? '#505050' : '#6a3a3a', lineHeight: 1.4 }}>
+                          {labelAction((r.output as Record<string, unknown>)?.action as string, r.taskId)}
+                          {r.error ? ` — ${r.error}` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {isExpanded && task.message && !isChat && (
+                  <p style={{ fontSize: '0.72rem', fontWeight: 300, color: '#606060', margin: '0.3rem 0 0', lineHeight: 1.5 }}>
                     {task.message}
                   </p>
                 )}
               </div>
-            ))}
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Task panel toggle (bottom center) ── */}
+      {tasks.length > 0 && (
+        <button
+          onClick={() => setTaskPanelOpen((v) => !v)}
+          aria-label={taskPanelOpen ? 'Close task panel' : 'Open task panel'}
+          style={{
+            position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 20, background: 'transparent', border: 'none',
+            color: '#333', cursor: 'pointer', padding: '4px 12px',
+            outline: 'none', transition: 'color 0.3s',
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+            style={{ transform: taskPanelOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s' }}>
+            <polyline points="18 15 12 9 6 15" />
+          </svg>
+        </button>
+      )}
+
+      {/* ── Full task panel (slide up) ── */}
+      {taskPanelOpen && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0,
+          zIndex: 15, maxHeight: '40vh', overflowY: 'auto',
+          background: '#0a0a0a', borderTop: '1px solid #1a1a1a',
+          padding: '1.5rem 2rem 2.5rem',
+          animation: 'slideUp 0.25s ease-out',
+        }}>
+          <div style={{ maxWidth: 560, margin: '0 auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <p style={{
+                fontSize: '0.6rem', fontWeight: 600, color: '#333',
+                textTransform: 'uppercase', letterSpacing: '0.1em', margin: 0,
+              }}>
+                Task History
+              </p>
+              <button
+                onClick={() => { setTasks([]); setTaskPanelOpen(false); }}
+                style={{
+                  background: 'transparent', border: 'none', color: '#333',
+                  fontSize: '0.6rem', cursor: 'pointer', textTransform: 'uppercase',
+                  letterSpacing: '0.08em', outline: 'none',
+                }}
+              >
+                Clear
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+              {tasks.map((task) => {
+                const isExpanded = expandedTaskId === task.id;
+                return (
+                  <div key={task.id} style={{
+                    paddingLeft: '0.65rem',
+                    borderLeft: `1.5px solid ${task.status === 'completed' ? '#3a3a3a' : task.status === 'running' ? '#666' : '#3a1a1a'}`,
+                    cursor: task.status !== 'running' ? 'pointer' : 'default',
+                  }} onClick={() => task.status !== 'running' && setExpandedTaskId(isExpanded ? null : task.id)}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+                      <span style={{
+                        fontSize: '0.8rem', fontWeight: 300,
+                        color: task.status === 'running' ? '#e8e8e8' : '#555',
+                        flex: 1, minWidth: 0,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>
+                        {task.command}
+                      </span>
+                      <span style={{
+                        fontSize: '0.65rem', fontWeight: 400, flexShrink: 0,
+                        color: task.status === 'completed' ? '#707070' : task.status === 'running' ? '#a0a0a0' : '#5a3a3a',
+                        display: 'flex', alignItems: 'center', gap: '0.35rem',
+                      }}>
+                        {task.status === 'running' ? (
+                          <TaskStatus taskId={task.id} />
+                        ) : task.status === 'completed' ? (
+                          <>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4a7a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                            {fmtMs(task.duration)}
+                          </>
+                        ) : (
+                          <>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#7a4a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                            </svg>
+                            {fmtMs(task.duration)}
+                          </>
+                        )}
+                      </span>
+                    </div>
+                    {isExpanded && task.results && (
+                      <div style={{ marginTop: '0.4rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                        {task.results.map((r) => (
+                          <div key={r.taskId} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.4rem' }}>
+                            {r.status === 'success' ? (
+                              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#4a7a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginTop: 2, flexShrink: 0 }}>
+                                <polyline points="20 6 9 17 4 12" />
+                              </svg>
+                            ) : (
+                              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#7a4a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginTop: 2, flexShrink: 0 }}>
+                                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                              </svg>
+                            )}
+                            <span style={{ fontSize: '0.7rem', fontWeight: 300, color: r.status === 'success' ? '#505050' : '#6a3a3a', lineHeight: 1.4 }}>
+                              {labelAction((r.output as Record<string, unknown>)?.action as string, r.taskId)}
+                              {r.error ? ` — ${r.error}` : ''}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {isExpanded && task.message && (
+                      <p style={{ fontSize: '0.72rem', fontWeight: 300, color: '#505050', margin: '0.3rem 0 0', lineHeight: 1.4 }}>
+                        {task.message}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </section>
+        </div>
       )}
 
       </div>{/* end content wrapper */}
@@ -645,9 +969,17 @@ export default function DashboardPage() {
           position: absolute;
           width: 72px; height: 72px;
           border-radius: 50%;
-          border: 1px solid #888;
-          animation: expandRing 1.8s ease-out infinite;
+          border: 1px solid #444;
+          animation: expandRing 2.4s ease-out infinite;
           pointer-events: none;
+        }
+        .mic-throbber {
+          display: inline-block;
+          width: 18px; height: 18px;
+          border-radius: 50%;
+          border: 1.5px solid #2a2a2a;
+          border-top-color: #555;
+          animation: spin 0.9s linear infinite;
         }
         .process-ring {
           position: absolute;
@@ -656,6 +988,18 @@ export default function DashboardPage() {
           border: 1px solid #555;
           animation: processRing 1.5s ease-in-out infinite;
           pointer-events: none;
+        }
+        @keyframes greetFade {
+          0%   { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        .greeting-line {
+          opacity: 0;
+          animation: greetFade 0.6s ease-out forwards;
+        }
+        @keyframes slideUp {
+          0%   { transform: translateY(100%); }
+          100% { transform: translateY(0); }
         }
         input::placeholder { color: #252525; }
         button:hover { border-color: #555 !important; color: #aaa !important; }

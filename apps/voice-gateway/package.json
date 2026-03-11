@@ -13,6 +13,7 @@
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.750.0",
     "@fastify/websocket": "^11.0.0",
+    "dotenv": "^17.3.1",
     "fastify": "^5.2.0",
     "ws": "^8.18.0"
   },

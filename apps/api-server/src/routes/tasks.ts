@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import type { ProgressEvent } from '@talos/orchestrator';
 import { z } from 'zod';
 
 const TaskRequestSchema = z.object({
@@ -54,6 +55,52 @@ export async function taskRoutes(server: FastifyInstance) {
         data: { error: String(err) },
       });
       throw err;
+    }
+  });
+
+  // SSE streaming endpoint — real-time progress events
+  server.post('/stream', async (request, reply) => {
+    const body = TaskRequestSchema.parse(request.body);
+
+    const sessionId = body.sessionId ?? `session_${Date.now()}`;
+    const userId = body.userId ?? 'anonymous';
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    const send = (event: string, data: unknown) => {
+      reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const onProgress = (evt: ProgressEvent) => {
+      send('progress', evt);
+    };
+
+    server.monitor.record({
+      sessionId,
+      taskId: sessionId,
+      type: 'task_created',
+      agentType: 'orchestrator',
+      data: { input: body.input, userId },
+    });
+
+    try {
+      const result = await server.orchestrator.handleRequest({
+        sessionId,
+        userId,
+        input: body.input,
+        onProgress,
+      });
+
+      send('result', result);
+    } catch (err) {
+      send('error', { message: String(err) });
+    } finally {
+      reply.raw.end();
     }
   });
 

@@ -68,21 +68,53 @@ export class JiraConnector {
   }
 
   async searchTickets(jql: string): Promise<JiraSearchResult[]> {
+    const params = new URLSearchParams({
+      jql,
+      maxResults: '20',
+      fields: 'summary,status,assignee',
+    });
+
     const response = await withRetry(() => fetch(
-      `${this.config.baseUrl}/rest/api/3/search?jql=${encodeURIComponent(jql)}&maxResults=20`,
-      { headers: { 'Authorization': `Basic ${this.authHeader}` } }
+      // Jira Cloud enhanced JQL search endpoint — GET /rest/api/3/search/jql
+      `${this.config.baseUrl}/rest/api/3/search/jql?${params.toString()}`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${this.authHeader}`,
+          'Accept': 'application/json',
+        },
+      }
     ));
 
-    if (!response.ok) throw new Error(`Jira search error: ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`Jira search error: ${response.status} ${await response.text()}`);
+    }
 
-    const data = await response.json() as { issues: Array<{ id: string; key: string; fields: { summary: string; status: { name: string }; assignee: { displayName: string } | null } }> };
-    return data.issues.map((issue) => ({
-      id: issue.id,
-      key: issue.key,
-      summary: issue.fields.summary,
-      status: issue.fields.status.name,
-      assignee: issue.fields.assignee?.displayName ?? null,
-    }));
+    const data = await response.json() as {
+      issues?: Array<{
+        id: string;
+        key: string;
+        fields?: {
+          summary?: string;
+          status?: { name?: string };
+          assignee?: { displayName?: string } | null;
+        };
+      }>;
+    };
+
+    if (!Array.isArray(data.issues)) {
+      return [];
+    }
+
+    return data.issues
+      .filter((issue) => issue && issue.fields && typeof issue.fields.summary === 'string')
+      .map((issue) => ({
+        id: issue.id,
+        key: issue.key,
+        summary: issue.fields!.summary as string,
+        status: issue.fields!.status?.name ?? 'Unknown',
+        assignee: issue.fields!.assignee?.displayName ?? null,
+      }));
   }
 
   /**

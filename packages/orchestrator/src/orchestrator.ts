@@ -10,7 +10,7 @@ import type {
   TaskResult,
   PlanningPrompt,
 } from './types.js';
-import { buildPlanningPrompt, PLANNING_SYSTEM_PROMPT, parsePlanResponse, type PlanResult } from './planner.js';
+import { buildPlanningPrompt, buildSystemPrompt, parsePlanResponse, type PlanResult } from './planner.js';
 
 /**
  * Central orchestrator that receives user requests, plans task graphs,
@@ -43,11 +43,15 @@ export class Orchestrator {
    * Main entry point: receive a user request, plan, execute, return results.
    */
   async handleRequest(request: OrchestratorRequest): Promise<OrchestratorResponse> {
+    const emit = request.onProgress ?? (() => {});
+
     // Phase 1: Plan — use Nova 2 Lite to understand the request
+    emit({ phase: 'planning', message: 'Understanding request...' });
     const planResult = await this.plan(request);
 
     // Chat responses skip task execution entirely
     if (planResult.type === 'chat') {
+      emit({ phase: 'chat', message: planResult.chatResponse ?? '' });
       return {
         sessionId: request.sessionId,
         taskGraph: { nodes: [], createdAt: Date.now() },
@@ -59,23 +63,29 @@ export class Orchestrator {
 
     const taskGraph = planResult.taskGraph!;
     this.activeTasks.set(request.sessionId, taskGraph);
+    emit({ phase: 'planning', message: `Planned ${taskGraph.nodes.length} task${taskGraph.nodes.length === 1 ? '' : 's'}` });
 
     // Phase 2: Execute — delegate tasks to specialist agents
-    const results = await this.execute(taskGraph, request.sessionId);
+    const results = await this.execute(taskGraph, request.sessionId, emit);
 
     // Phase 3: Aggregate — collect results and build response
     this.activeTasks.delete(request.sessionId);
 
     const allSucceeded = results.every((r) => r.status === 'success');
 
+    const summaryMessage = this.buildSummaryMessage(results, allSucceeded);
+
+    emit({
+      phase: allSucceeded ? 'completed' : 'failed',
+      message: summaryMessage,
+    });
+
     return {
       sessionId: request.sessionId,
       taskGraph,
       status: allSucceeded ? 'completed' : 'failed',
       results,
-      message: allSucceeded
-        ? 'All tasks completed successfully.'
-        : 'Some tasks failed. Check results for details.',
+      message: summaryMessage,
     };
   }
 
@@ -97,7 +107,7 @@ export class Orchestrator {
 
     const command = new ConverseCommand({
       modelId: this.config.novaLiteModelId,
-      system: [{ text: PLANNING_SYSTEM_PROMPT }],
+      system: [{ text: buildSystemPrompt(this.config.jiraProjectKey) }],
       messages: [
         {
           role: 'user',
@@ -121,9 +131,10 @@ export class Orchestrator {
    * Phase 2: Walk the task graph, delegate each node to the correct agent.
    * Respects dependency ordering — parallel where possible, sequential where required.
    */
-  private async execute(graph: TaskGraph, sessionId: string): Promise<TaskResult[]> {
+  private async execute(graph: TaskGraph, sessionId: string, emit?: (e: import('./types.js').ProgressEvent) => void): Promise<TaskResult[]> {
     const results: TaskResult[] = [];
     const completed = new Set<string>();
+    const progress = emit ?? (() => {});
 
     // Topological execution: process nodes whose dependencies are all met
     while (completed.size < graph.nodes.length) {
@@ -137,6 +148,17 @@ export class Orchestrator {
         throw new Error('Deadlock detected in task graph — circular dependency.');
       }
 
+      // Emit progress for each node about to execute
+      for (const node of ready) {
+        progress({
+          phase: 'executing',
+          message: `Executing: ${node.action}`,
+          nodeId: node.id,
+          action: node.action,
+          agentType: node.agentType,
+        });
+      }
+
       // Execute ready tasks in parallel (up to concurrency limit)
       const batchResults = await Promise.allSettled(
         ready.map((node) => this.executeNode(node, sessionId))
@@ -148,6 +170,14 @@ export class Orchestrator {
 
         if (settled.status === 'fulfilled') {
           results.push(settled.value);
+          progress({
+            phase: 'node_complete',
+            message: `${node.action} — ${settled.value.status}`,
+            nodeId: node.id,
+            action: node.action,
+            agentType: node.agentType,
+            status: settled.value.status,
+          });
           if (settled.value.status === 'success') {
             completed.add(node.id);
           } else {
@@ -275,5 +305,55 @@ export class Orchestrator {
 
   getActiveTaskCount(): number {
     return this.activeTasks.size;
+  }
+
+  /**
+   * Build a human-readable summary for the orchestrator response.
+   * Special-case Jira search so voice/text callers get an actual ticket summary.
+   */
+  private buildSummaryMessage(results: TaskResult[], allSucceeded: boolean): string {
+    // Look for successful execution results from jira_search
+    const jiraSearchOutputs = results
+      .filter(
+        (r) =>
+          r.status === 'success' &&
+          r.agentType === 'execution' &&
+          r.output &&
+          (r.output as any).action === 'jira_search' &&
+          Array.isArray((r.output as any).results)
+      )
+      .map((r) => (r.output as any).results as Array<{
+        key?: string;
+        summary?: string;
+        status?: string;
+      }>);
+
+    const jiraTickets = jiraSearchOutputs.flat().filter(Boolean);
+
+    if (jiraTickets.length > 0) {
+      const count = jiraTickets.length;
+      const header =
+        count === 1
+          ? 'I found 1 Jira ticket:'
+          : `I found ${count} Jira tickets:`;
+
+      const lines = jiraTickets.slice(0, 5).map((t) => {
+        const key = t.key ?? '(no key)';
+        const status = t.status ?? 'Unknown';
+        const summary = t.summary ?? '(no summary)';
+        return `- ${key} [${status}] — ${summary}`;
+      });
+
+      const remainder =
+        count > 5 ? `\n…and ${count - 5} more.` : '';
+
+      return `${header}\n${lines.join('\n')}${remainder}`;
+    }
+
+    // Fallback generic messages
+    if (allSucceeded) {
+      return 'All tasks completed successfully.';
+    }
+    return 'Some tasks failed. Check results for details.';
   }
 }

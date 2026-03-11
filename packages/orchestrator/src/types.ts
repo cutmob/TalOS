@@ -4,16 +4,29 @@ import type { AgentType } from '@talos/agent-runtime';
 export interface OrchestratorConfig {
   bedrockRegion: string;
   novaLiteModelId: string;
+  jiraProjectKey: string;
   maxConcurrentAgents: number;
   taskTimeout: number;
   retryLimit: number;
 }
+
+export interface ProgressEvent {
+  phase: 'planning' | 'executing' | 'node_complete' | 'completed' | 'failed' | 'chat';
+  message: string;
+  nodeId?: string;
+  action?: string;
+  agentType?: string;
+  status?: string;
+}
+
+export type ProgressCallback = (event: ProgressEvent) => void;
 
 export interface OrchestratorRequest {
   sessionId: string;
   userId: string;
   input: string;
   context?: SessionContext;
+  onProgress?: ProgressCallback;
 }
 
 export interface SessionContext {

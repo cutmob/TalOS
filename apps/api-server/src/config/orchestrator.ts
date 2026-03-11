@@ -41,6 +41,7 @@ export function createSystemFromEnv(): SystemServices {
   const config: OrchestratorConfig = {
     bedrockRegion,
     novaLiteModelId,
+    jiraProjectKey: process.env.JIRA_PROJECT_KEY ?? 'KAN',
     maxConcurrentAgents: parseInt(process.env.MAX_CONCURRENT_AGENTS ?? '4', 10),
     taskTimeout: parseInt(process.env.TASK_TIMEOUT ?? '30000', 10),
     retryLimit: parseInt(process.env.RETRY_LIMIT ?? '3', 10),
