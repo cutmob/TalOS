@@ -1,6 +1,6 @@
-import { BaseAgent } from '@operon/agent-runtime';
-import type { AgentType, AgentTask, AgentCapability } from '@operon/agent-runtime';
-import type { MemoryManager, UISnapshot } from '@operon/memory-engine';
+import { BaseAgent } from '@talos/agent-runtime';
+import type { AgentType, AgentTask, AgentCapability } from '@talos/agent-runtime';
+import type { MemoryManager, UISnapshot } from '@talos/memory-engine';
 
 /**
  * Execution Agent — performs UI automation by delegating to the

@@ -1,7 +1,7 @@
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
-import { BaseAgent } from '@operon/agent-runtime';
-import type { AgentType, AgentTask, AgentCapability } from '@operon/agent-runtime';
-import type { MemoryManager } from '@operon/memory-engine';
+import { BaseAgent } from '@talos/agent-runtime';
+import type { AgentType, AgentTask, AgentCapability } from '@talos/agent-runtime';
+import type { MemoryManager } from '@talos/memory-engine';
 
 /**
  * Recovery Agent — handles automation failures and self-healing.

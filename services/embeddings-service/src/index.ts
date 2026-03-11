@@ -1,4 +1,4 @@
-import type { MemoryEntry, MemoryStore, MemoryQuery } from '@operon/memory-engine';
+import type { MemoryEntry, MemoryStore, MemoryQuery } from '@talos/memory-engine';
 
 /**
  * In-memory implementation of MemoryStore for development/hackathon.

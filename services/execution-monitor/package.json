@@ -1,5 +1,5 @@
 {
-  "name": "@operon/execution-monitor",
+  "name": "@talos/execution-monitor",
   "version": "0.1.0",
   "private": true,
   "type": "module",

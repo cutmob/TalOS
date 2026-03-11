@@ -1,5 +1,5 @@
 {
-  "name": "@operon/orchestrator",
+  "name": "@talos/orchestrator",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,10 +12,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@operon/task-graph": "*",
-    "@operon/agent-runtime": "*",
-    "@operon/workflow-engine": "*",
-    "@operon/memory-engine": "*",
+    "@talos/task-graph": "*",
+    "@talos/agent-runtime": "*",
+    "@talos/workflow-engine": "*",
+    "@talos/memory-engine": "*",
     "@aws-sdk/client-bedrock-runtime": "^3.750.0"
   }
 }

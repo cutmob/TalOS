@@ -1,8 +1,8 @@
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
-import { BaseAgent } from '@operon/agent-runtime';
-import type { AgentType, AgentTask, AgentCapability } from '@operon/agent-runtime';
-import type { WorkflowRegistry } from '@operon/workflow-engine';
-import type { MemoryManager } from '@operon/memory-engine';
+import { BaseAgent } from '@talos/agent-runtime';
+import type { AgentType, AgentTask, AgentCapability } from '@talos/agent-runtime';
+import type { WorkflowRegistry } from '@talos/workflow-engine';
+import type { MemoryManager } from '@talos/memory-engine';
 import { ORCHESTRATOR_SYSTEM_PROMPT } from './prompts.js';
 
 /**

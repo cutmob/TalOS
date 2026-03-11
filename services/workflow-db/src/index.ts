@@ -1,5 +1,5 @@
-import type { Workflow, WorkflowStore, WorkflowMatch } from '@operon/workflow-engine';
-import { WorkflowMatcher } from '@operon/workflow-engine';
+import type { Workflow, WorkflowStore, WorkflowMatch } from '@talos/workflow-engine';
+import { WorkflowMatcher } from '@talos/workflow-engine';
 
 /**
  * In-memory workflow store for development.

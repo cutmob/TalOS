@@ -1,5 +1,5 @@
-import type { TaskGraph } from '@operon/task-graph';
-import { TaskGraphBuilder } from '@operon/task-graph';
+import type { TaskGraph } from '@talos/task-graph';
+import { TaskGraphBuilder } from '@talos/task-graph';
 import type { PlanningPrompt } from './types.js';
 
 export const PLANNING_SYSTEM_PROMPT = `You are the TalOS Orchestrator — an AI planning engine that converts natural language commands into structured automation plans.

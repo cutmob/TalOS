@@ -1,5 +1,5 @@
 {
-  "name": "@operon/connector-slack",
+  "name": "@talos/connector-slack",
   "version": "0.1.0",
   "private": true,
   "type": "module",

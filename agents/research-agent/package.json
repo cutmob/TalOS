@@ -1,5 +1,5 @@
 {
-  "name": "@operon/research-agent",
+  "name": "@talos/research-agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,8 +7,8 @@
   "types": "./dist/index.d.ts",
   "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "vitest", "clean": "rm -rf dist" },
   "dependencies": {
-    "@operon/agent-runtime": "*",
-    "@operon/memory-engine": "*",
-    "@operon/workflow-engine": "*"
+    "@talos/agent-runtime": "*",
+    "@talos/memory-engine": "*",
+    "@talos/workflow-engine": "*"
   }
 }

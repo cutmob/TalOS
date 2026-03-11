@@ -1,5 +1,5 @@
-import type { TaskGraph } from '@operon/task-graph';
-import type { AgentType } from '@operon/agent-runtime';
+import type { TaskGraph } from '@talos/task-graph';
+import type { AgentType } from '@talos/agent-runtime';
 
 export interface OrchestratorConfig {
   bedrockRegion: string;

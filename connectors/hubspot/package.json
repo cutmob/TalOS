@@ -1,5 +1,5 @@
 {
-  "name": "@operon/connector-hubspot",
+  "name": "@talos/connector-hubspot",
   "version": "0.1.0",
   "private": true,
   "type": "module",

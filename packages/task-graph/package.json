@@ -1,5 +1,5 @@
 {
-  "name": "@operon/task-graph",
+  "name": "@talos/task-graph",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,6 +12,6 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@operon/agent-runtime": "*"
+    "@talos/agent-runtime": "*"
   }
 }

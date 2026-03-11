@@ -1,14 +1,14 @@
-import { Orchestrator } from '@operon/orchestrator';
-import type { OrchestratorConfig } from '@operon/orchestrator';
-import { MemoryManager } from '@operon/memory-engine';
-import { WorkflowRegistry } from '@operon/workflow-engine';
-import { OrchestratorAgent } from '@operon/orchestrator-agent';
-import { ResearchAgent } from '@operon/research-agent';
-import { ExecutionAgent } from '@operon/execution-agent';
-import { RecoveryAgent } from '@operon/recovery-agent';
-import { InMemoryStore } from '@operon/embeddings-service';
-import { InMemoryWorkflowStore } from '@operon/workflow-db';
-import { ExecutionMonitor } from '@operon/execution-monitor';
+import { Orchestrator } from '@talos/orchestrator';
+import type { OrchestratorConfig } from '@talos/orchestrator';
+import { MemoryManager } from '@talos/memory-engine';
+import { WorkflowRegistry } from '@talos/workflow-engine';
+import { OrchestratorAgent } from '@talos/orchestrator-agent';
+import { ResearchAgent } from '@talos/research-agent';
+import { ExecutionAgent } from '@talos/execution-agent';
+import { RecoveryAgent } from '@talos/recovery-agent';
+import { InMemoryStore } from '@talos/embeddings-service';
+import { InMemoryWorkflowStore } from '@talos/workflow-db';
+import { ExecutionMonitor } from '@talos/execution-monitor';
 
 export interface SystemServices {
   orchestrator: Orchestrator;

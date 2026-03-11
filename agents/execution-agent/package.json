@@ -1,5 +1,5 @@
 {
-  "name": "@operon/execution-agent",
+  "name": "@talos/execution-agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,7 @@
   "types": "./dist/index.d.ts",
   "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "vitest", "clean": "rm -rf dist" },
   "dependencies": {
-    "@operon/agent-runtime": "*",
-    "@operon/memory-engine": "*"
+    "@talos/agent-runtime": "*",
+    "@talos/memory-engine": "*"
   }
 }

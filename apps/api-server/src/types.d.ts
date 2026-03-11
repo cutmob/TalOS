@@ -1,6 +1,6 @@
-import type { Orchestrator } from '@operon/orchestrator';
-import type { WorkflowRegistry } from '@operon/workflow-engine';
-import type { ExecutionMonitor } from '@operon/execution-monitor';
+import type { Orchestrator } from '@talos/orchestrator';
+import type { WorkflowRegistry } from '@talos/workflow-engine';
+import type { ExecutionMonitor } from '@talos/execution-monitor';
 
 declare module 'fastify' {
   interface FastifyInstance {

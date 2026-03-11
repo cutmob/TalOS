@@ -1,7 +1,7 @@
-import { BaseAgent } from '@operon/agent-runtime';
-import type { AgentType, AgentTask, AgentCapability } from '@operon/agent-runtime';
-import type { MemoryManager } from '@operon/memory-engine';
-import type { WorkflowRegistry } from '@operon/workflow-engine';
+import { BaseAgent } from '@talos/agent-runtime';
+import type { AgentType, AgentTask, AgentCapability } from '@talos/agent-runtime';
+import type { MemoryManager } from '@talos/memory-engine';
+import type { WorkflowRegistry } from '@talos/workflow-engine';
 
 /**
  * Research Agent — retrieves information from the knowledge base.

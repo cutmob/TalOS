@@ -1,8 +1,8 @@
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
-import type { TaskGraph, TaskNode } from '@operon/task-graph';
-import { TaskGraphBuilder } from '@operon/task-graph';
-import type { Agent } from '@operon/agent-runtime';
-import { AgentPool } from '@operon/agent-runtime';
+import type { TaskGraph, TaskNode } from '@talos/task-graph';
+import { TaskGraphBuilder } from '@talos/task-graph';
+import type { Agent } from '@talos/agent-runtime';
+import { AgentPool } from '@talos/agent-runtime';
 import type {
   OrchestratorConfig,
   OrchestratorRequest,

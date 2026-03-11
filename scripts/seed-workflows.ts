@@ -3,7 +3,7 @@
  * Run: npx tsx scripts/seed-workflows.ts
  */
 
-import type { Workflow } from '@operon/workflow-engine';
+import type { Workflow } from '@talos/workflow-engine';
 
 const SEED_WORKFLOWS: Omit<Workflow, 'id' | 'version' | 'createdAt' | 'updatedAt'>[] = [
   {

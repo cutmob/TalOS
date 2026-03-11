@@ -1,5 +1,5 @@
 {
-  "name": "@operon/automation-runner",
+  "name": "@talos/automation-runner",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,10 +11,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@operon/agent-runtime": "*",
-    "@operon/execution-agent": "*",
-    "@operon/recovery-agent": "*",
-    "@operon/memory-engine": "*",
+    "@talos/agent-runtime": "*",
+    "@talos/execution-agent": "*",
+    "@talos/recovery-agent": "*",
+    "@talos/memory-engine": "*",
     "fastify": "^5.2.0"
   },
   "devDependencies": {

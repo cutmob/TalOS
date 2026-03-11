@@ -1,5 +1,5 @@
 {
-  "name": "@operon/voice-gateway",
+  "name": "@talos/voice-gateway",
   "version": "0.1.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,5 @@
 {
-  "name": "@operon/recovery-agent",
+  "name": "@talos/recovery-agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,8 +7,8 @@
   "types": "./dist/index.d.ts",
   "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "vitest", "clean": "rm -rf dist" },
   "dependencies": {
-    "@operon/agent-runtime": "*",
-    "@operon/memory-engine": "*",
+    "@talos/agent-runtime": "*",
+    "@talos/memory-engine": "*",
     "@aws-sdk/client-bedrock-runtime": "^3.750.0"
   }
 }

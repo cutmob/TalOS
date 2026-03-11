@@ -1,4 +1,4 @@
-import type { AgentType } from '@operon/agent-runtime';
+import type { AgentType } from '@talos/agent-runtime';
 
 export interface TaskNode {
   id: string;
