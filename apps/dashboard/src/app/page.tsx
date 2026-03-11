@@ -130,7 +130,6 @@ export default function DashboardPage() {
   const [transcript, setTranscript] = useState('');
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [activeAgents, setActiveAgents] = useState<Set<string>>(new Set());
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [greeting] = useState<Pair>(pickGreeting);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -174,16 +173,6 @@ export default function DashboardPage() {
     } catch { /* audio decode error — ignore */ }
   }, []);
 
-  // Fallback TTS for text-submitted responses (no Sonic session)
-  const speak = useCallback((text: string) => {
-    if (!voiceEnabled || typeof window === 'undefined' || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = 1.05;
-    utter.pitch = 1.0;
-    window.speechSynthesis.speak(utter);
-  }, [voiceEnabled]);
-
   // ── Submit command ────────────────────────────────────────────────────────
 
   const submitCommand = useCallback(async (text?: string) => {
@@ -225,8 +214,7 @@ export default function DashboardPage() {
         )
       );
 
-      // Speak the response if voice is enabled and not in a Sonic session
-      if (data.message && !isListening) speak(data.message);
+      // Voice responses handled by Nova Sonic when mic is active
     } catch (err) {
       setTasks((prev) =>
         prev.map((t) =>
@@ -292,13 +280,9 @@ export default function DashboardPage() {
           setCommand(text);
           setTimeout(() => submitCommand(text), 500);
         }
-        // Nova Sonic audio output — play it
-        if (msg.type === 'audioOutput' && msg.data?.audio && voiceEnabled) {
+        // Nova Sonic audio output — play it (only active during mic session)
+        if (msg.type === 'audioOutput' && msg.data?.audio) {
           playPCM24k(msg.data.audio);
-        }
-        // Task result from voice pipeline
-        if (msg.type === 'task_result' && msg.result?.message) {
-          speak(msg.result.message);
         }
       } catch { /* ignore */ }
     };
@@ -503,38 +487,6 @@ export default function DashboardPage() {
             )}
           </button>
 
-          {/* Voice response toggle */}
-          <button
-            onClick={() => setVoiceEnabled((v) => !v)}
-            aria-label={voiceEnabled ? 'Disable voice responses' : 'Enable voice responses'}
-            title={voiceEnabled ? 'Voice on' : 'Voice off'}
-            style={{
-              position: 'absolute',
-              right: -52,
-              width: 32, height: 32,
-              borderRadius: '50%',
-              background: 'transparent',
-              border: `1px solid ${voiceEnabled ? '#555' : '#1a1a1a'}`,
-              color: voiceEnabled ? '#888' : '#333',
-              cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'all 0.3s',
-              outline: 'none',
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-              stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-              {voiceEnabled ? (
-                <>
-                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                </>
-              ) : (
-                <line x1="23" y1="9" x2="17" y2="15" />
-              )}
-            </svg>
-          </button>
         </div>
 
         {/* Live transcript */}
