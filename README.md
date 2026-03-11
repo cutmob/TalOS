@@ -2,7 +2,32 @@
 
 > **Amazon Nova Hackathon Submission** | #AmazonNova
 
-**TalOS is a voice-controlled AI orchestration platform that turns natural language commands into automated enterprise workflows.** Say "create a Jira ticket for the login bug" or "send a Slack update to the team" and TalOS plans, executes, and recovers autonomously.
+**TalOS is a voice-controlled AI operating system that turns a single spoken sentence into a fully automated, multi-step enterprise workflow.** Say _"create a Jira ticket for the login bug and post a Slack update to engineering"_ — TalOS plans the steps, executes them in parallel across your tools, and self-heals if anything goes wrong.
+
+## Who is it for?
+
+| Role | How TalOS helps |
+|---|---|
+| **Software engineers & tech leads** | Voice-create Jira tickets, trigger CI updates, post incident alerts to Slack — hands-free while staying in flow |
+| **Product managers** | Dictate tasks across Jira + Notion + Slack without switching tabs |
+| **Sales & revenue teams** | Create HubSpot contacts, log deals, and send follow-up emails by speaking one sentence |
+| **Operations & support** | Automate cross-platform runbooks — escalate, notify, log, and document in one voice command |
+
+Basically: **if your job involves moving information between apps**, TalOS eliminates that manual work.
+
+## Example commands you can say
+
+```
+"Create a P1 Jira ticket for the checkout bug and alert #incidents on Slack"
+"Add John Smith to HubSpot and send him an intro email via Gmail"
+"Summarize my open Jira tickets and post a standup to #engineering"
+"Log today's sprint retro notes in Notion and share the link on Slack"
+"Check if we have a HubSpot deal for Acme Corp — if not, create one"
+```
+
+Each command fans out into a dependency-aware task graph, executing independent steps in parallel and retrying failed steps automatically.
+
+---
 
 Built on Amazon Nova's full model portfolio:
 - **Nova 2 Lite** powers the orchestrator's reasoning engine, decomposing complex requests into dependency-aware task graphs executed by specialist agents (research, execution, recovery)
