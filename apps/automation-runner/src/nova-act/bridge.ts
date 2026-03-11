@@ -68,51 +68,51 @@ export class NovaActBridge extends EventEmitter {
       '../../python/nova_act_bridge.py'
     );
 
-    this.process = spawn(this.pythonPath, [scriptPath], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PYTHONUNBUFFERED: '1',
-      },
-    });
+    return new Promise<{ novaActAvailable: boolean }>((resolveInit) => {
+      this.process = spawn(this.pythonPath, [scriptPath], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      });
 
-    this.readline = createInterface({
-      input: this.process.stdout!,
-      crlfDelay: Infinity,
-    });
+      // Gracefully handle missing python3 / spawn failures
+      this.process.on('error', () => {
+        this.ready = false;
+        this.process = null;
+        resolveInit({ novaActAvailable: false });
+      });
 
-    // Handle stderr for debugging
-    this.process.stderr!.on('data', (data: Buffer) => {
-      this.emit('debug', data.toString());
-    });
+      this.readline = createInterface({ input: this.process.stdout!, crlfDelay: Infinity });
 
-    this.process.on('exit', (code) => {
-      this.ready = false;
-      this.emit('exit', code);
-      // Reject all pending requests
-      for (const [, { reject }] of this.pendingRequests) {
-        reject(new Error(`Nova Act bridge process exited with code ${code}`));
-      }
-      this.pendingRequests.clear();
-    });
+      this.process.stderr!.on('data', (data: Buffer) => {
+        this.emit('debug', data.toString());
+      });
 
-    // Parse JSON responses line by line
-    this.readline.on('line', (line: string) => {
-      try {
-        const result = JSON.parse(line) as NovaActResult;
-        const resolver = this.responseQueue.shift();
-        if (resolver) {
-          resolver(result);
+      this.process.on('exit', (code) => {
+        this.ready = false;
+        this.emit('exit', code);
+        for (const [, { reject }] of this.pendingRequests) {
+          reject(new Error(`Nova Act bridge process exited with code ${code}`));
         }
-      } catch {
-        this.emit('debug', `Non-JSON output: ${line}`);
-      }
-    });
+        this.pendingRequests.clear();
+      });
 
-    // Wait for the "ready" signal
-    const readyResult = await this.waitForResponse();
-    this.ready = true;
-    return { novaActAvailable: readyResult.novaActAvailable ?? false };
+      this.readline.on('line', (line: string) => {
+        try {
+          const result = JSON.parse(line) as NovaActResult;
+          const resolver = this.responseQueue.shift();
+          if (resolver) resolver(result);
+        } catch {
+          this.emit('debug', `Non-JSON output: ${line}`);
+        }
+      });
+
+      this.waitForResponse().then((readyResult) => {
+        this.ready = true;
+        resolveInit({ novaActAvailable: readyResult.novaActAvailable ?? false });
+      }).catch(() => {
+        resolveInit({ novaActAvailable: false });
+      });
+    });
   }
 
   /**
