@@ -4,7 +4,7 @@ export async function healthRoutes(server: FastifyInstance) {
   // Liveness
   server.get('/', async () => ({
     status: 'ok',
-    service: 'operon-api',
+    service: 'talos-api',
     version: '0.1.0',
     timestamp: new Date().toISOString(),
   }));

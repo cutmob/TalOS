@@ -116,7 +116,7 @@ async function start() {
 
   server.get('/health', async () => ({
     status: 'ok',
-    service: 'operon-voice-gateway',
+    service: 'talos-voice-gateway',
     model: sonicConfig.modelId,
     voice: sonicConfig.voice,
   }));

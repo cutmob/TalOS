@@ -43,7 +43,7 @@ export class IntentExtractor {
 
     // Strip wake word
     const withoutWake = cleaned
-      .replace(/^(hey\s+)?operon[\s,]*/i, '')
+      .replace(/^(hey\s+)?talos[\s,]*/i, '')
       .trim();
 
     // Detect action

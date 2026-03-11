@@ -55,7 +55,7 @@ server.delete<{ Params: { sessionId: string } }>(
 
 server.get('/health', async () => ({
   status: 'ok',
-  service: 'operon-automation-runner',
+  service: 'talos-automation-runner',
   novaActAvailable: runner.isNovaActAvailable(),
 }));
 
