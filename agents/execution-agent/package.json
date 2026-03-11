@@ -8,6 +8,8 @@
   "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "vitest", "clean": "rm -rf dist" },
   "dependencies": {
     "@talos/agent-runtime": "*",
-    "@talos/memory-engine": "*"
+    "@talos/memory-engine": "*",
+    "@talos/connector-jira": "*",
+    "@talos/connector-slack": "*"
   }
 }

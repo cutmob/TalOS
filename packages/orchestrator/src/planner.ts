@@ -13,25 +13,35 @@ Output format:
 
 ## Type 2: Task automation (create, send, update, check, etc.)
 If the user wants you to DO something across their tools — plan it as a task graph.
+
+PREFERRED: Use direct connector actions when available (fast, reliable REST API calls):
+- jira_create_ticket: { summary, description?, issueType? (Bug/Task/Story), priority? (Highest/High/Medium/Low/Lowest), labels? }
+- jira_search: { jql } — search tickets with JQL query
+- slack_send_message: { channel, message } — send a message to a Slack channel
+- slack_list_channels: {} — list available Slack channels
+
+FALLBACK: Use browser automation actions only when no direct connector exists:
+- open_app, navigate, click, type, select, submit, extract, screenshot, wait
+
 Output format:
 {
   "nodes": [
     {
       "id": "step_1",
-      "action": "open_app",
+      "action": "jira_create_ticket",
       "agentType": "execution",
-      "parameters": { "app": "jira", "url": "..." },
+      "parameters": { "summary": "Login bug", "issueType": "Bug", "priority": "High" },
       "dependencies": [],
-      "metadata": { "recoveryHint": "retry with alternate URL" }
+      "metadata": { "recoveryHint": "retry with different issue type" }
     }
   ]
 }
 
 Rules for task graphs:
+- ALWAYS prefer direct connector actions (jira_*, slack_*) over browser automation
 - Each step must have a clear action and target
 - Steps that can run in parallel should have no dependency on each other
 - Steps that must run sequentially should declare dependencies
-- Use only the available tools and connectors listed below
 - If a request is ambiguous, pick the most reasonable interpretation
 - Always include error-recovery hints in step metadata
 

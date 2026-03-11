@@ -1,6 +1,8 @@
 import { BaseAgent } from '@talos/agent-runtime';
 import type { AgentType, AgentTask, AgentCapability } from '@talos/agent-runtime';
 import type { MemoryManager, UISnapshot } from '@talos/memory-engine';
+import { JiraConnector } from '@talos/connector-jira';
+import { SlackConnector } from '@talos/connector-slack';
 
 /**
  * Execution Agent — performs UI automation by delegating to the
@@ -21,6 +23,8 @@ export class ExecutionAgent extends BaseAgent {
   readonly type: AgentType = 'execution';
   private memory: MemoryManager;
   private runnerUrl: string;
+  private jira: JiraConnector | null = null;
+  private slack: SlackConnector | null = null;
 
   constructor(config: {
     memory: MemoryManager;
@@ -33,10 +37,32 @@ export class ExecutionAgent extends BaseAgent {
       config.automationRunnerUrl ??
       process.env.AUTOMATION_RUNNER_URL ??
       'http://localhost:3003';
+
+    // Initialize connectors from env if available
+    if (process.env.JIRA_BASE_URL && process.env.JIRA_API_TOKEN) {
+      this.jira = new JiraConnector({
+        baseUrl: process.env.JIRA_BASE_URL,
+        email: process.env.JIRA_USER_EMAIL ?? '',
+        apiToken: process.env.JIRA_API_TOKEN,
+        projectKey: process.env.JIRA_PROJECT_KEY ?? 'TAL',
+      });
+    }
+    if (process.env.SLACK_BOT_TOKEN) {
+      this.slack = new SlackConnector({
+        botToken: process.env.SLACK_BOT_TOKEN,
+        signingSecret: process.env.SLACK_SIGNING_SECRET ?? '',
+      });
+    }
   }
 
   async execute(task: AgentTask): Promise<unknown> {
     switch (task.action) {
+      // ── Direct connector actions (REST API) ──
+      case 'jira_create_ticket':  return this.jiraCreateTicket(task);
+      case 'jira_search':         return this.jiraSearch(task);
+      case 'slack_send_message':  return this.slackSendMessage(task);
+      case 'slack_list_channels': return this.slackListChannels(task);
+      // ── Browser automation actions (Nova Act) ──
       case 'open_app':   return this.openApp(task);
       case 'navigate':   return this.navigate(task);
       case 'click':      return this.click(task);
@@ -49,6 +75,45 @@ export class ExecutionAgent extends BaseAgent {
       default:
         throw new Error(`Unknown execution action: ${task.action}`);
     }
+  }
+
+  // ── Connector actions ─────────────────────────────────────────────────
+
+  private async jiraCreateTicket(task: AgentTask): Promise<unknown> {
+    if (!this.jira) return { error: 'Jira not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.jira.createTicket({
+      summary: (p.summary as string) ?? (p.title as string) ?? 'Untitled',
+      description: p.description as string | undefined,
+      issueType: ((p.issueType as string) ?? 'Task') as 'Bug' | 'Task' | 'Story' | 'Epic',
+      priority: p.priority as 'Highest' | 'High' | 'Medium' | 'Low' | 'Lowest' | undefined,
+      labels: p.labels as string[] | undefined,
+    });
+    return { action: 'jira_create_ticket', ...result, status: 'created' };
+  }
+
+  private async jiraSearch(task: AgentTask): Promise<unknown> {
+    if (!this.jira) return { error: 'Jira not configured', status: 'skipped' };
+    const jql = (task.parameters.jql as string) ?? (task.parameters.query as string) ?? '';
+    const results = await this.jira.searchTickets(jql);
+    return { action: 'jira_search', results, count: results.length };
+  }
+
+  private async slackSendMessage(task: AgentTask): Promise<unknown> {
+    if (!this.slack) return { error: 'Slack not configured', status: 'skipped' };
+    const p = task.parameters;
+    const channel = (p.channel as string) ?? process.env.SLACK_DEFAULT_CHANNEL ?? 'general';
+    const result = await this.slack.sendMessage({
+      channel,
+      text: (p.message as string) ?? (p.text as string) ?? '',
+    });
+    return { action: 'slack_send_message', channel, ...result, status: 'sent' };
+  }
+
+  private async slackListChannels(task: AgentTask): Promise<unknown> {
+    if (!this.slack) return { error: 'Slack not configured', status: 'skipped' };
+    const channels = await this.slack.listChannels();
+    return { action: 'slack_list_channels', channels, count: channels.length };
   }
 
   // ── Automation runner bridge ─────────────────────────────────────────────
@@ -177,7 +242,13 @@ export class ExecutionAgent extends BaseAgent {
 
   getCapabilities(): AgentCapability[] {
     return [
-      { name: 'open_app', description: 'Open a web application', parameters: { app: { type: 'string', description: 'Application name', required: true }, url: { type: 'string', description: 'Direct URL', required: false } } },
+      // Direct connector actions (preferred — fast, reliable)
+      { name: 'jira_create_ticket', description: 'Create a Jira ticket via REST API', parameters: { summary: { type: 'string', description: 'Ticket title/summary', required: true }, description: { type: 'string', description: 'Ticket description', required: false }, issueType: { type: 'string', description: 'Issue type (Task, Bug, Story)', required: false }, priority: { type: 'string', description: 'Priority (Highest, High, Medium, Low, Lowest)', required: false }, labels: { type: 'array', description: 'Labels', required: false } } },
+      { name: 'jira_search', description: 'Search Jira tickets using JQL', parameters: { jql: { type: 'string', description: 'JQL query string', required: true } } },
+      { name: 'slack_send_message', description: 'Send a Slack message to a channel', parameters: { channel: { type: 'string', description: 'Channel name or ID', required: true }, message: { type: 'string', description: 'Message text', required: true } } },
+      { name: 'slack_list_channels', description: 'List available Slack channels', parameters: {} },
+      // Browser automation actions (fallback — Nova Act)
+      { name: 'open_app', description: 'Open a web application in the browser', parameters: { app: { type: 'string', description: 'Application name', required: true }, url: { type: 'string', description: 'Direct URL', required: false } } },
       { name: 'navigate', description: 'Navigate to a URL', parameters: { url: { type: 'string', description: 'Target URL', required: true } } },
       { name: 'click', description: 'Click a UI element via Nova Act natural language', parameters: { target: { type: 'string', description: 'Element label to click', required: true } } },
       { name: 'type', description: 'Type text into a field', parameters: { field: { type: 'string', description: 'Field name', required: true }, value: { type: 'string', description: 'Text to type', required: true } } },
