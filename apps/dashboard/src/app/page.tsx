@@ -256,7 +256,7 @@ export default function DashboardPage() {
     };
 
     try {
-      const res = await fetch('/api/tasks/stream', {
+      const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ input, sessionId: taskId }),
@@ -264,67 +264,45 @@ export default function DashboardPage() {
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let finalResult: { results?: TaskResult[]; status?: string; message?: string } | null = null;
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-
-          // Parse SSE lines from buffer
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-
-          let eventType = '';
-          for (const line of lines) {
-            if (line.startsWith('event: ')) {
-              eventType = line.slice(7).trim();
-            } else if (line.startsWith('data: ')) {
-              const data = JSON.parse(line.slice(6));
-              if (eventType === 'progress') {
-                // Update real-time progress label
-                const agentTypes = new Set(activeAgents);
-                if (data.agentType) agentTypes.add(data.agentType);
-                setActiveAgents(agentTypes);
-                updateTask({ progressLabel: data.message });
-              } else if (eventType === 'result') {
-                finalResult = data;
-              } else if (eventType === 'error') {
-                throw new Error(data.message);
-              }
-              eventType = '';
-            }
-          }
-        }
-      }
+      const data = await res.json() as {
+        status?: string;
+        response?: string;
+        results?: TaskResult[];
+      };
 
       const duration = Date.now() - startedAt;
 
-      if (finalResult) {
-        const types = new Set<string>(
-          (finalResult.results ?? []).map((r) => r.agentType)
-        );
-        setActiveAgents(types);
+      const agentTypes = new Set<string>(
+        (data.results ?? []).map((r) => r.agentType)
+      );
+      if (agentTypes.size > 0) {
+        setActiveAgents(agentTypes);
         setTimeout(() => setActiveAgents(new Set()), 1500);
-
-        const ok =
-          finalResult.results?.every((r) => r.status === 'success') ??
-          finalResult.status === 'completed';
-
-        updateTask({
-          status: ok ? 'completed' : 'failed',
-          completedAt: Date.now(),
-          duration,
-          results: finalResult.results as TaskResult[],
-          message: finalResult.message,
-        });
-      } else {
-        updateTask({ status: 'completed', completedAt: Date.now(), duration });
       }
+
+      const ok =
+        data.results?.every((r) => r.status === 'success') ??
+        data.status === 'completed';
+
+      // Prefer the chat response field directly from the orchestrator;
+      // only fall back to a generic summary if it truly returned nothing.
+      let summary = data.response ?? '';
+
+      if (!summary) {
+        summary = ok
+          ? 'All tasks completed successfully.'
+          : 'Some tasks failed. Check results for details.';
+      }
+
+      setTranscript(summary);
+
+      updateTask({
+        status: ok ? 'completed' : 'failed',
+        completedAt: Date.now(),
+        duration,
+        results: data.results as TaskResult[] | undefined,
+        message: summary,
+      });
     } catch (err) {
       updateTask({
         status: 'failed',
@@ -392,6 +370,15 @@ export default function DashboardPage() {
           };
 
           if (result?.message) setTranscript(result.message);
+
+          // Light up agent status dots based on which agents actually ran
+          if (result?.results && result.results.length > 0) {
+            const types = new Set<string>(result.results.map((r) => r.agentType));
+            if (types.size > 0) {
+              setActiveAgents(types);
+              setTimeout(() => setActiveAgents(new Set()), 1500);
+            }
+          }
 
           // Mirror voice commands into the same task history as typed commands
           const now = Date.now();

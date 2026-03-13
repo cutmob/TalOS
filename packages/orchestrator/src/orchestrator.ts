@@ -310,33 +310,50 @@ export class Orchestrator {
 
   /**
    * Build a human-readable summary for the orchestrator response.
-   * Special-case Jira search so voice/text callers get an actual ticket summary.
+   * Special-case Jira search so callers get an actual ticket summary,
+   * and always return at least two sentences so the UI has something
+   * conversational to show.
    */
   private buildSummaryMessage(results: TaskResult[], allSucceeded: boolean): string {
     // Look for successful execution results from jira_search
-    const jiraSearchOutputs = results
-      .filter(
-        (r) =>
-          r.status === 'success' &&
-          r.agentType === 'execution' &&
-          r.output &&
-          (r.output as any).action === 'jira_search' &&
-          Array.isArray((r.output as any).results)
-      )
-      .map((r) => (r.output as any).results as Array<{
-        key?: string;
-        summary?: string;
-        status?: string;
-      }>);
+    const jiraSearchResults = results.filter(
+      (r) =>
+        r.status === 'success' &&
+        r.agentType === 'execution' &&
+        r.output &&
+        (r.output as any).action === 'jira_search'
+    );
 
-    const jiraTickets = jiraSearchOutputs.flat().filter(Boolean);
+    if (jiraSearchResults.length > 0) {
+      const jiraTickets = jiraSearchResults
+        .map((r) => (r.output as any).results as Array<{
+          key?: string;
+          summary?: string;
+          status?: string;
+        }> | undefined)
+        .filter((arr): arr is Array<{ key?: string; summary?: string; status?: string }> => Array.isArray(arr))
+        .flat()
+        .filter(Boolean);
 
-    if (jiraTickets.length > 0) {
-      const count = jiraTickets.length;
+      // Use explicit count when provided by the connector; fall back to ticket array length.
+      const explicitCounts = jiraSearchResults
+        .map((r) => (r.output as any).count as number | undefined)
+        .filter((n): n is number => typeof n === 'number' && !Number.isNaN(n));
+
+      const totalCount = explicitCounts.length > 0 ? explicitCounts[0] : jiraTickets.length;
+
+      if (totalCount === 0) {
+        // User asked something like "how many ...?" — make 0 explicit and encouraging.
+        return [
+          'I did not find any Jira tickets matching your request.',
+          'If you expected results, check the project key, status filter, or try broadening the search.',
+        ].join(' ');
+      }
+
       const header =
-        count === 1
-          ? 'I found 1 Jira ticket:'
-          : `I found ${count} Jira tickets:`;
+        totalCount === 1
+          ? 'I found 1 Jira ticket.'
+          : `I found ${totalCount} Jira tickets.`;
 
       const lines = jiraTickets.slice(0, 5).map((t) => {
         const key = t.key ?? '(no key)';
@@ -346,15 +363,15 @@ export class Orchestrator {
       });
 
       const remainder =
-        count > 5 ? `\n…and ${count - 5} more.` : '';
+        totalCount > 5 ? `\n…and ${totalCount - 5} more beyond the first few listed here.` : '';
 
-      return `${header}\n${lines.join('\n')}${remainder}`;
+      return `${header} Here are the most relevant ones:\n${lines.join('\n')}${remainder}`;
     }
 
-    // Fallback generic messages
+    // Fallback generic messages — always at least two sentences.
     if (allSucceeded) {
-      return 'All tasks completed successfully.';
+      return 'All tasks completed successfully. Everything ran end-to-end without errors, and you can inspect individual steps in the task history for more detail.';
     }
-    return 'Some tasks failed. Check results for details.';
+    return 'Some tasks failed during execution. Open the task details to see which steps had issues and any associated error messages so you can follow up.';
   }
 }
