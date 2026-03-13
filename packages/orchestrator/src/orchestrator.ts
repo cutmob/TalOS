@@ -103,6 +103,7 @@ export class Orchestrator {
       availableConnectors: this.agentPool.getAvailableConnectors(),
       workflowHistory: [],
       context: request.context,
+      targetApp: request.targetApp,
     });
 
     const command = new ConverseCommand({

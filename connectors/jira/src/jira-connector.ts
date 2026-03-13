@@ -4,11 +4,10 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
   for (let attempt = 0; attempt < retries; attempt++) {
     try { return await fn(); } catch (err) {
       if (attempt === retries - 1) throw err;
-      const retryable = err instanceof Error && (
-        err.message.includes('429') || err.message.includes('5')
-      );
+      // Retry on 429 (rate limit) or 5xx (server error) — regex avoids false positives from generic '5'
+      const retryable = err instanceof Error && /(?:429|5\d\d)/.test(err.message);
       if (!retryable) throw err;
-      await new Promise(r => setTimeout(r, Math.min(1000 * 2 ** attempt, 8000)));
+      await new Promise(r => setTimeout(r, Math.min(1000 * 2 ** attempt, 30_000)));
     }
   }
   throw new Error('unreachable');
@@ -39,6 +38,7 @@ export class JiraConnector {
         'Authorization': `Basic ${this.authHeader}`,
         'Content-Type': 'application/json',
       },
+      signal: AbortSignal.timeout(30_000),
       body: JSON.stringify({
         fields: {
           project: { key: this.config.projectKey },
@@ -70,7 +70,7 @@ export class JiraConnector {
   async searchTickets(jql: string): Promise<JiraSearchResult[]> {
     const params = new URLSearchParams({
       jql,
-      maxResults: '20',
+      maxResults: '50',
       fields: 'summary,status,assignee',
     });
 
@@ -83,6 +83,7 @@ export class JiraConnector {
           'Authorization': `Basic ${this.authHeader}`,
           'Accept': 'application/json',
         },
+        signal: AbortSignal.timeout(30_000),
       }
     ));
 

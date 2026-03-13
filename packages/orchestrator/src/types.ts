@@ -25,6 +25,8 @@ export interface OrchestratorRequest {
   sessionId: string;
   userId: string;
   input: string;
+  /** Routing hint from voice gateway — speeds up planner by pre-identifying the target tool */
+  targetApp?: 'jira' | 'slack' | 'gmail' | 'hubspot' | 'notion' | 'browser';
   context?: SessionContext;
   onProgress?: ProgressCallback;
 }
@@ -58,6 +60,7 @@ export interface PlanningPrompt {
   availableConnectors: string[];
   workflowHistory: string[];
   context: SessionContext | undefined;
+  targetApp?: string;
 }
 
 export interface ToolDefinition {

@@ -40,6 +40,9 @@ export class ExecutionAgent extends BaseAgent {
 
     // Initialize connectors from env if available
     if (process.env.JIRA_BASE_URL && process.env.JIRA_API_TOKEN) {
+      if (!process.env.JIRA_USER_EMAIL) {
+        console.warn('[ExecutionAgent] JIRA_USER_EMAIL not set — Jira API calls will fail with 401. Set JIRA_USER_EMAIL to your Atlassian account email.');
+      }
       this.jira = new JiraConnector({
         baseUrl: process.env.JIRA_BASE_URL,
         email: process.env.JIRA_USER_EMAIL ?? '',
@@ -102,7 +105,8 @@ export class ExecutionAgent extends BaseAgent {
   private async slackSendMessage(task: AgentTask): Promise<unknown> {
     if (!this.slack) return { error: 'Slack not configured', status: 'skipped' };
     const p = task.parameters;
-    const channel = (p.channel as string) ?? process.env.SLACK_DEFAULT_CHANNEL ?? 'general';
+    const channel = (p.channel as string | undefined) ?? process.env.SLACK_DEFAULT_CHANNEL;
+    if (!channel) throw new Error('Slack channel is required — planner must include a channel parameter in slack_send_message');
     const result = await this.slack.sendMessage({
       channel,
       text: (p.message as string) ?? (p.text as string) ?? '',
@@ -201,7 +205,8 @@ export class ExecutionAgent extends BaseAgent {
       ?? null;
 
     if (!target) {
-      // Gracefully skip instead of throwing so the overall task doesn't fail.
+      // Log a warning — skipped extract may cause downstream tasks to receive null data
+      console.warn(`[ExecutionAgent] extract action skipped for session ${task.sessionId}: no target parameter provided`);
       return {
         action: 'extract',
         status: 'skipped',

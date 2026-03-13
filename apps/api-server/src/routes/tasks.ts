@@ -4,8 +4,11 @@ import { z } from 'zod';
 
 const TaskRequestSchema = z.object({
   input: z.string().min(1).max(2000),
-  sessionId: z.string().optional(),
-  userId: z.string().optional(),
+  // sessionId must be alphanumeric+dash, max 128 chars — prevents injection into logs/DB
+  sessionId: z.string().max(128).regex(/^[\w-]+$/).optional(),
+  userId: z.string().max(128).optional(),
+  // targetApp forwarded from voice gateway to help the orchestrator route faster
+  targetApp: z.enum(['jira', 'slack', 'gmail', 'hubspot', 'notion', 'browser']).optional(),
 });
 
 export async function taskRoutes(server: FastifyInstance) {
@@ -32,6 +35,7 @@ export async function taskRoutes(server: FastifyInstance) {
         sessionId,
         userId,
         input: body.input,
+        targetApp: body.targetApp,
       });
 
       const duration = Date.now() - startTime;
@@ -93,6 +97,7 @@ export async function taskRoutes(server: FastifyInstance) {
         sessionId,
         userId,
         input: body.input,
+        targetApp: body.targetApp,
         onProgress,
       });
 

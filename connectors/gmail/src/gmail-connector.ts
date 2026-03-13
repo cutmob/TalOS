@@ -4,11 +4,9 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
   for (let attempt = 0; attempt < retries; attempt++) {
     try { return await fn(); } catch (err) {
       if (attempt === retries - 1) throw err;
-      const retryable = err instanceof Error && (
-        err.message.includes('429') || err.message.includes('5')
-      );
+      const retryable = err instanceof Error && /(?:429|5\d\d)/.test(err.message);
       if (!retryable) throw err;
-      await new Promise(r => setTimeout(r, Math.min(1000 * 2 ** attempt, 8000)));
+      await new Promise(r => setTimeout(r, Math.min(1000 * 2 ** attempt, 30_000)));
     }
   }
   throw new Error('unreachable');

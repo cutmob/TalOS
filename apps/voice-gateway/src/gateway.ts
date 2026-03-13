@@ -28,25 +28,59 @@ const VOICE = process.env.NOVA_SONIC_VOICE ?? 'tiffany';
 const API_SERVER_URL = process.env.API_SERVER_URL ?? 'http://localhost:3001';
 
 const SYSTEM_PROMPT =
-  'You are TalOS, a voice-controlled AI operating system. ' +
-  'Your only job is to listen for commands and execute them using the executeCommand tool. ' +
-  'When the user speaks a command, immediately call executeCommand with their exact intent. ' +
-  'Confirm in one short sentence what you did after execution. ' +
-  'Do NOT explain settings, give advice, or add commentary. Just execute and confirm. ' +
-  'STOP ASKING FOR CLARIFICATION. Pick the most sensible default and EXECUTE.';
+  'You are TalOS — a voice-controlled AI operating system for enterprise software.\n\n' +
+  'PERSONALITY: Professional, warm, extremely concise. No filler words. Never say "Certainly!", "Of course!", "Great question!", or "Sure thing!".\n\n' +
+  'WHEN THE USER GIVES A COMMAND:\n' +
+  '1. Call executeCommand immediately — do not describe what you are about to do, just do it.\n' +
+  '2. After the tool returns, confirm in one short sentence: "Done — [what happened]." or "[Action] complete."\n' +
+  '3. If the tool returns an error, say: "[Action] failed — [brief reason]. Want me to try a different approach?"\n\n' +
+  'WHEN THE USER IS AMBIGUOUS:\n' +
+  '- If the app is inferable from context ("create a ticket" → Jira, "send a message" → Slack), execute immediately.\n' +
+  '- If genuinely unclear, ask ONE short question only before calling the tool: "Jira ticket or Slack message?"\n\n' +
+  'TARGET APP SELECTION:\n' +
+  '- Mentions of ticket/bug/issue/story/sprint/backlog → targetApp: "jira"\n' +
+  '- Mentions of message/channel/notify/dm/post → targetApp: "slack"\n' +
+  '- Mentions of email/mail/send email → targetApp: "gmail"\n' +
+  '- Mentions of contact/deal/crm/lead → targetApp: "hubspot"\n' +
+  '- Mentions of page/doc/wiki/database/notion → targetApp: "notion"\n' +
+  '- Web navigation or apps without a connector → targetApp: "browser"\n\n' +
+  'EXAMPLES OF GOOD RESPONSES:\n' +
+  '"Done — bug ticket PROJ-142 created in Jira."\n' +
+  '"Message sent to #engineering."\n' +
+  '"Ticket creation failed — project key not found. Want me to try a different project?"\n' +
+  '"Jira or Slack?"\n\n' +
+  'Do NOT explain the plan before executing. Do NOT add commentary after confirming.';
 
 const TALOS_TOOLS = [
   {
     toolSpec: {
       name: 'executeCommand',
-      description: 'Execute a TalOS automation command across enterprise tools',
+      description:
+        'Execute a TalOS automation command across enterprise tools (Jira, Slack, Gmail, HubSpot, Notion, or browser). ' +
+        'Call this immediately when the user\'s intent is clear — do not wait or ask for confirmation first.',
       inputSchema: {
         json: JSON.stringify({
           type: 'object',
           properties: {
-            command: { type: 'string', description: 'The automation command to execute' },
+            command: {
+              type: 'string',
+              description:
+                'The user\'s automation intent in natural language. Be specific and include all relevant details. ' +
+                'Examples: "create high-priority bug ticket: login page crashes on mobile Safari" | ' +
+                '"send message to channel engineering: deployment to prod is complete" | ' +
+                '"search Jira for all in-progress tickets assigned to me"',
+            },
+            targetApp: {
+              type: 'string',
+              enum: ['jira', 'slack', 'gmail', 'hubspot', 'notion', 'browser'],
+              description:
+                'The target enterprise application. Infer from the user\'s words: ' +
+                'ticket/bug/issue/sprint → jira | message/channel/notify → slack | ' +
+                'email/mail → gmail | contact/deal/crm → hubspot | page/doc/wiki → notion | ' +
+                'everything else → browser',
+            },
           },
-          required: ['command'],
+          required: ['command', 'targetApp'],
         }),
       },
     },
@@ -201,7 +235,7 @@ async function start() {
                   const res = await fetch(`${API_SERVER_URL}/api/tasks/stream`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ input: input.command, sessionId: `voice_${Date.now()}` }),
+                    body: JSON.stringify({ input: input.command, targetApp: input.targetApp, sessionId: `voice_${Date.now()}` }),
                     signal: AbortSignal.timeout(60_000),
                   });
 
@@ -311,3 +345,12 @@ start().catch((err) => {
   console.error('Failed to start voice gateway:', err);
   process.exit(1);
 });
+
+// Graceful shutdown — close active WebSocket connections before exit
+const shutdown = async (signal: string) => {
+  server.log.info(`${signal} received — shutting down voice gateway`);
+  await server.close();
+  process.exit(0);
+};
+process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+process.on('SIGINT', () => { void shutdown('SIGINT'); });

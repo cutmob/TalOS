@@ -3,6 +3,12 @@ import { BaseAgent } from '@talos/agent-runtime';
 import type { AgentType, AgentTask, AgentCapability } from '@talos/agent-runtime';
 import type { MemoryManager } from '@talos/memory-engine';
 
+const RECOVERY_SYSTEM_PROMPT =
+  'You are the TalOS Recovery Agent — a specialist in diagnosing and fixing UI automation failures.\n' +
+  'You reason precisely about broken selectors, changed UIs, and failed actions.\n' +
+  'Always respond with valid JSON only. No explanation text outside the JSON object.\n' +
+  'Be conservative with confidence scores — only score > 0.8 when you are highly certain.';
+
 /**
  * Recovery Agent — handles automation failures and self-healing.
  *
@@ -97,15 +103,37 @@ export class RecoveryAgent extends BaseAgent {
     const oldSelector = task.parameters.oldSelector as string;
     const elements = task.parameters.availableElements as string[];
 
-    const prompt = `A UI automation script failed because the element "${oldSelector}" no longer exists in ${app}.
+    // Cap at 30 elements — more than this degrades model accuracy without adding signal
+    const capped = elements.slice(0, 30);
+    const elementList = capped.map((e) => `- "${e}"`).join('\n');
+    const truncationNote = elements.length > 30
+      ? `\n(${elements.length - 30} additional elements omitted for clarity)`
+      : '';
 
-Available elements on the current page:
-${elements.map((e) => `- "${e}"`).join('\n')}
+    const prompt = `<task>
+A UI automation script failed because the element "${oldSelector}" no longer exists in ${app}.
+Find the best replacement element from the list below.
+</task>
 
-Which element is the most likely replacement for "${oldSelector}"?
-Respond with JSON: { "match": "element_label", "confidence": 0.0-1.0, "reasoning": "..." }`;
+<available_elements>
+${elementList}${truncationNote}
+</available_elements>
 
-    const result = await this.invokeNova(prompt);
+<instructions>
+1. Identify which element most likely replaced "${oldSelector}" based on label similarity, position, and common UI patterns.
+2. If no reasonable match exists, return match: null with confidence: 0.
+3. Score conservatively — only > 0.8 when you are highly certain.
+</instructions>
+
+<example>
+Old selector: "Submit Order"
+Available: ["Place Order", "Cancel", "Back", "Continue Shopping"]
+Output: {"match":"Place Order","confidence":0.92,"reasoning":"'Place Order' is a direct semantic equivalent to 'Submit Order' — both complete a purchase action."}
+</example>
+
+Respond with JSON only: { "match": "element_label" | null, "confidence": 0.0-1.0, "reasoning": "..." }`;
+
+    const result = await this.invokeNova(prompt, RECOVERY_SYSTEM_PROMPT);
 
     // Store the correction
     try {
@@ -124,18 +152,33 @@ Respond with JSON: { "match": "element_label", "confidence": 0.0-1.0, "reasoning
     const error = task.parameters.error as string;
     const context = task.parameters.context as string;
 
-    const prompt = `Analyze this UI automation failure:
+    const prompt = `<task>
+Analyze a UI automation failure and determine its root cause and recoverability.
+</task>
+
+<failure>
 Error: ${error}
 Context: ${context}
+</failure>
 
-Determine:
-1. Root cause category (selector_changed, page_not_loaded, auth_required, element_hidden, other)
-2. Suggested recovery action
-3. Whether this is recoverable
+<categories>
+- selector_changed:   A UI element moved, was renamed, or the DOM structure changed
+- page_not_loaded:    The target page did not load or timed out
+- auth_required:      The action requires authentication that is missing or expired
+- element_hidden:     The element exists but is not visible or interactable
+- network_error:      An API call or resource failed to load
+- other:              Failure does not match the above categories
+</categories>
 
-Respond with JSON: { "category": "...", "recoverable": true/false, "suggestedAction": "...", "explanation": "..." }`;
+<example>
+Error: "Element 'Create Issue' not found after 10s"
+Context: "Attempting to click Create button on Jira board"
+Output: {"category":"selector_changed","recoverable":true,"suggestedAction":"Search for alternative elements containing 'Create' or '+'","explanation":"The 'Create Issue' button was likely renamed or moved in a Jira UI update."}
+</example>
 
-    const result = await this.invokeNova(prompt);
+Respond with JSON only: { "category": "...", "recoverable": true|false, "suggestedAction": "...", "explanation": "..." }`;
+
+    const result = await this.invokeNova(prompt, RECOVERY_SYSTEM_PROMPT);
     try {
       return JSON.parse(result);
     } catch {
@@ -147,13 +190,34 @@ Respond with JSON: { "category": "...", "recoverable": true/false, "suggestedAct
     originalTask: Record<string, unknown>,
     error: string
   ): Promise<{ suggestedFix: string | null; explanation: string }> {
-    const prompt = `UI automation failed.
-Task: ${JSON.stringify(originalTask)}
-Error: ${error}
+    const prompt = `<task>
+A UI automation task failed. Determine the most likely cause and the concrete fix.
+</task>
 
-What is the most likely cause and fix? Respond with JSON: { "suggestedFix": "new_selector_or_action", "explanation": "..." }`;
+<failed_task>
+${JSON.stringify(originalTask, null, 2)}
+</failed_task>
 
-    const result = await this.invokeNova(prompt);
+<error>
+${error}
+</error>
+
+<instructions>
+Provide a specific, actionable fix — not a generic suggestion.
+- If the selector likely changed, suggest the new selector label based on the task context.
+- If the action sequence is wrong, suggest the corrected sequence.
+- If this is unrecoverable (e.g. auth expired, app unavailable), set suggestedFix to null.
+</instructions>
+
+<example>
+Task: {"action":"click","target":"Submit","app":"jira"}
+Error: "Element 'Submit' not found"
+Output: {"suggestedFix":"Create","explanation":"Jira's ticket creation dialog uses 'Create' not 'Submit' as the confirmation button label."}
+</example>
+
+Respond with JSON only: { "suggestedFix": "new_selector_or_action" | null, "explanation": "..." }`;
+
+    const result = await this.invokeNova(prompt, RECOVERY_SYSTEM_PROMPT);
     try {
       return JSON.parse(result);
     } catch {
@@ -161,14 +225,15 @@ What is the most likely cause and fix? Respond with JSON: { "suggestedFix": "new
     }
   }
 
-  private async invokeNova(prompt: string): Promise<string> {
+  private async invokeNova(userPrompt: string, systemPrompt?: string): Promise<string> {
     // Use Converse API — AWS-recommended for all Nova text models
     const command = new ConverseCommand({
       modelId: this.modelId,
+      ...(systemPrompt ? { system: [{ text: systemPrompt }] } : {}),
       messages: [
         {
           role: 'user',
-          content: [{ text: prompt }],
+          content: [{ text: userPrompt }],
         },
       ],
       inferenceConfig: {
