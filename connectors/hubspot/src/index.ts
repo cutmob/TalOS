@@ -9,10 +9,15 @@ export interface HubSpotContact {
   firstName: string;
   lastName: string;
   company?: string;
+  phone?: string;
+  jobTitle?: string;
 }
 
-export interface HubSpotCampaign {
+export interface HubSpotDeal {
   name: string;
-  subject: string;
-  content: string;
+  amount?: number;
+  stage?: string;
+  pipeline?: string;
+  closeDate?: string;
+  contactId?: string;
 }

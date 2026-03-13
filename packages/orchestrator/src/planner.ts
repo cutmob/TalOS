@@ -33,11 +33,94 @@ jira_search — Search Jira tickets using JQL
     - "backlog" → status="To Do"
     - "closed", "done", "resolved" → status="Done"
 
+jira_update_ticket — Transition Jira tickets to a new status
+  Parameters:
+    - key: single issue key (e.g. ${projectKey}-123)
+    - keys: array of issue keys
+    - jql: JQL to select multiple issues (preferred for "close all X" style requests)
+    - newStatus: the intent in plain English — the executor resolves this to the real Jira transition
+  NATURAL LANGUAGE → newStatus mapping (use these exact strings):
+    DONE intent   → newStatus="Done"
+      Triggers: "close", "done", "finish", "complete", "resolve", "fixed", "ship", "delivered", "mark as done", "won't fix", "cancel"
+    IN PROGRESS intent → newStatus="In Progress"
+      Triggers: "start", "begin", "work on", "pick up", "in progress", "wip", "assign to me", "review", "testing", "active"
+    TO DO intent  → newStatus="To Do"
+      Triggers: "reopen", "backlog", "reset", "put back", "not started", "undo", "to do", "unstart"
+  BULK EXAMPLES:
+    - "close all open tickets", "mark everything as done", "resolve these bugs"
+      → jira_update_ticket { jql: "project=${projectKey} AND status IN ('To Do','In Progress')", newStatus: "Done" }
+    - "start working on KAN-5", "pick up KAN-5"
+      → jira_update_ticket { key: "KAN-5", newStatus: "In Progress" }
+    - "reopen KAN-5"
+      → jira_update_ticket { key: "KAN-5", newStatus: "To Do" }
+
 slack_send_message — Post a message to a Slack channel
   Parameters: { channel (required, no # prefix), message (required) }
 
 slack_list_channels — List all available Slack channels
   Parameters: {}
+
+slack_reply_in_thread — Reply to a specific Slack thread
+  Parameters: { channel (required), threadTs (required — the ts of the parent message), message (required) }
+
+slack_send_dm — Send a direct message to a user
+  Parameters: { userId (required — Slack user ID), message (required) }
+
+slack_add_reaction — Add an emoji reaction to a message
+  Parameters: { channel (required), timestamp (required — message ts), emoji (required, no colons e.g. "thumbsup") }
+
+slack_upload_file — Upload a file to a channel
+  Parameters: { channel (required), filename (required), content (required — file text content) }
+
+gmail_send_email — Send an email via Gmail
+  Parameters: { to (required, array of addresses), subject (required), body (required), cc?, bcc? }
+
+gmail_search — Search Gmail messages
+  Parameters: { query (required, Gmail search syntax e.g. "from:x@y.com subject:foo"), maxResults? }
+  Common query patterns:
+    - "unread emails" → query: "is:unread"
+    - "emails from X" → query: "from:X"
+    - "emails about topic" → query: "subject:topic"
+
+gmail_reply — Reply to an existing email thread
+  Parameters: { threadId (required), messageId (required — the Message-ID header value), to (required), subject (required), body (required), cc? }
+
+gmail_modify_labels — Add/remove Gmail labels (e.g. archive, mark read)
+  Parameters: { messageIds (required, array), addLabels?, removeLabels? }
+  Common label IDs: "UNREAD", "STARRED", "IMPORTANT", "INBOX", "TRASH"
+
+hubspot_create_contact — Create a HubSpot contact
+  Parameters: { email (required), firstName?, lastName?, company?, phone?, jobTitle? }
+
+hubspot_search_contacts — Search HubSpot contacts
+  Parameters: { query (required — name, email, or company) }
+
+hubspot_update_contact — Update an existing HubSpot contact
+  Parameters: { id (required), email?, firstName?, lastName?, company?, phone?, jobTitle? }
+
+hubspot_create_deal — Create a HubSpot deal
+  Parameters: { name (required), amount?, stage?, pipeline?, closeDate?, contactId? }
+
+hubspot_search_deals — Search HubSpot deals
+  Parameters: { query (required) }
+
+hubspot_update_deal — Update a HubSpot deal
+  Parameters: { id (required), fields (required — object with HubSpot property names e.g. { dealstage: "closedwon", amount: "5000" }) }
+
+hubspot_log_activity — Log a note/activity on a deal or contact
+  Parameters: { note (required), dealId?, contactId? }
+
+notion_search — Search Notion pages and databases
+  Parameters: { query (required) }
+
+notion_create_page — Create a Notion page
+  Parameters: { title (required), content?, parentId? (parent page ID — omit for workspace root) }
+
+notion_update_page — Update a Notion page title or properties
+  Parameters: { pageId (required), title?, properties?, archived? }
+
+notion_append_block — Append text content to a Notion page
+  Parameters: { blockId (required — use page ID to append to a page), content (required) }
 
 FALLBACK — Browser automation (only when no direct connector exists):
   open_app, navigate, click, type, select, submit, extract, screenshot, wait
@@ -48,12 +131,13 @@ FALLBACK — Browser automation (only when no direct connector exists):
 2. NEVER use browser automation for Jira or Slack.
 3. ONLY use a connector when the user explicitly names that tool OR when continuing an active workflow already using it. Do NOT add Slack/email/CRM steps when the user only asked about Jira.
 4. For Jira searches, NEVER emit status=Open in JQL. When the user talks about "open"/"unresolved"/"active" tickets, interpret that as status IN ("To Do","In Progress") instead.
-5. NEVER add extra steps (extract, summarize) that the user did not request.
-6. Pick the most sensible default — do NOT ask for clarification.
-7. Minimum steps — fewest nodes possible to fulfill the request.
-8. Steps with no mutual dependency should have empty dependencies arrays (enabling parallel execution).
-9. Always include a recoveryHint in every node's metadata.
-10. When no valid plan is possible: { "chat": true, "response": "I can't automate that — [brief reason]." }
+5. For bulk close/update intents ("close all open tickets"), prefer jira_update_ticket with a JQL parameter that matches the intended set of issues instead of trying to enumerate keys manually.
+6. NEVER add extra steps (extract, summarize) that the user did not request.
+7. Pick the most sensible default — do NOT ask for clarification.
+8. Minimum steps — fewest nodes possible to fulfill the request.
+9. Steps with no mutual dependency should have empty dependencies arrays (enabling parallel execution).
+10. Always include a recoveryHint in every node's metadata.
+11. When no valid plan is possible: { "chat": true, "response": "I can't automate that — [brief reason]." }
 </rules>
 
 <thinking_instructions>

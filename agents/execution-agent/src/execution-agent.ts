@@ -3,6 +3,9 @@ import type { AgentType, AgentTask, AgentCapability } from '@talos/agent-runtime
 import type { MemoryManager, UISnapshot } from '@talos/memory-engine';
 import { JiraConnector } from '@talos/connector-jira';
 import { SlackConnector } from '@talos/connector-slack';
+import { GmailConnector } from '@talos/connector-gmail';
+import { HubSpotConnector } from '@talos/connector-hubspot';
+import { NotionConnector } from '@talos/connector-notion';
 
 /**
  * Execution Agent — performs UI automation by delegating to the
@@ -25,6 +28,9 @@ export class ExecutionAgent extends BaseAgent {
   private runnerUrl: string;
   private jira: JiraConnector | null = null;
   private slack: SlackConnector | null = null;
+  private gmail: GmailConnector | null = null;
+  private hubspot: HubSpotConnector | null = null;
+  private notion: NotionConnector | null = null;
 
   constructor(config: {
     memory: MemoryManager;
@@ -38,10 +44,9 @@ export class ExecutionAgent extends BaseAgent {
       process.env.AUTOMATION_RUNNER_URL ??
       'http://localhost:3003';
 
-    // Initialize connectors from env if available
     if (process.env.JIRA_BASE_URL && process.env.JIRA_API_TOKEN) {
       if (!process.env.JIRA_USER_EMAIL) {
-        console.warn('[ExecutionAgent] JIRA_USER_EMAIL not set — Jira API calls will fail with 401. Set JIRA_USER_EMAIL to your Atlassian account email.');
+        console.warn('[ExecutionAgent] JIRA_USER_EMAIL not set — Jira API calls will fail with 401.');
       }
       this.jira = new JiraConnector({
         baseUrl: process.env.JIRA_BASE_URL,
@@ -56,15 +61,52 @@ export class ExecutionAgent extends BaseAgent {
         signingSecret: process.env.SLACK_SIGNING_SECRET ?? '',
       });
     }
+    if (process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET && process.env.GMAIL_REFRESH_TOKEN) {
+      this.gmail = new GmailConnector({
+        clientId: process.env.GMAIL_CLIENT_ID,
+        clientSecret: process.env.GMAIL_CLIENT_SECRET,
+        refreshToken: process.env.GMAIL_REFRESH_TOKEN,
+      });
+    }
+    if (process.env.HUBSPOT_API_KEY) {
+      this.hubspot = new HubSpotConnector({ apiKey: process.env.HUBSPOT_API_KEY });
+    }
+    if (process.env.NOTION_API_KEY) {
+      this.notion = new NotionConnector({ apiKey: process.env.NOTION_API_KEY });
+    }
   }
 
   async execute(task: AgentTask): Promise<unknown> {
     switch (task.action) {
-      // ── Direct connector actions (REST API) ──
-      case 'jira_create_ticket':  return this.jiraCreateTicket(task);
-      case 'jira_search':         return this.jiraSearch(task);
-      case 'slack_send_message':  return this.slackSendMessage(task);
-      case 'slack_list_channels': return this.slackListChannels(task);
+      // ── Jira ──
+      case 'jira_create_ticket':      return this.jiraCreateTicket(task);
+      case 'jira_search':             return this.jiraSearch(task);
+      case 'jira_update_ticket':      return this.jiraUpdateTicket(task);
+      // ── Slack ──
+      case 'slack_send_message':      return this.slackSendMessage(task);
+      case 'slack_list_channels':     return this.slackListChannels(task);
+      case 'slack_reply_in_thread':   return this.slackReplyInThread(task);
+      case 'slack_send_dm':           return this.slackSendDm(task);
+      case 'slack_add_reaction':      return this.slackAddReaction(task);
+      case 'slack_upload_file':       return this.slackUploadFile(task);
+      // ── Gmail ──
+      case 'gmail_send_email':        return this.gmailSendEmail(task);
+      case 'gmail_search':            return this.gmailSearch(task);
+      case 'gmail_reply':             return this.gmailReply(task);
+      case 'gmail_modify_labels':     return this.gmailModifyLabels(task);
+      // ── HubSpot ──
+      case 'hubspot_create_contact':  return this.hubspotCreateContact(task);
+      case 'hubspot_search_contacts': return this.hubspotSearchContacts(task);
+      case 'hubspot_update_contact':  return this.hubspotUpdateContact(task);
+      case 'hubspot_create_deal':     return this.hubspotCreateDeal(task);
+      case 'hubspot_search_deals':    return this.hubspotSearchDeals(task);
+      case 'hubspot_update_deal':     return this.hubspotUpdateDeal(task);
+      case 'hubspot_log_activity':    return this.hubspotLogActivity(task);
+      // ── Notion ──
+      case 'notion_search':           return this.notionSearch(task);
+      case 'notion_create_page':      return this.notionCreatePage(task);
+      case 'notion_update_page':      return this.notionUpdatePage(task);
+      case 'notion_append_block':     return this.notionAppendBlock(task);
       // ── Browser automation actions (Nova Act) ──
       case 'open_app':   return this.openApp(task);
       case 'navigate':   return this.navigate(task);
@@ -99,7 +141,273 @@ export class ExecutionAgent extends BaseAgent {
     if (!this.jira) return { error: 'Jira not configured', status: 'skipped' };
     const jql = (task.parameters.jql as string) ?? (task.parameters.query as string) ?? '';
     const results = await this.jira.searchTickets(jql);
-    return { action: 'jira_search', results, count: results.length };
+
+    // When a query returns nothing, fetch all project tickets so the
+    // summary can tell the user what's actually there instead of "nothing found".
+    let allResults: typeof results | undefined;
+    if (results.length === 0) {
+      const projectMatch = jql.match(/project\s*=\s*([A-Z0-9_-]+)/i);
+      const projectKey = projectMatch?.[1] ?? process.env.JIRA_PROJECT_KEY;
+      if (projectKey) {
+        const fallback = await this.jira.searchTickets(
+          `project=${projectKey} ORDER BY updated DESC`
+        );
+        if (fallback.length > 0) allResults = fallback;
+      }
+    }
+
+    return { action: 'jira_search', jql, results, count: results.length, allResults };
+  }
+
+  /**
+   * Maps any free-form user intent string to a Jira statusCategory key.
+   * This allows "start it", "wip", "working on", "finish", "reopen", etc. to work
+   * without the planner needing to output exact Jira status names.
+   */
+  private resolveStatusIntent(input: string): {
+    categoryKey: 'new' | 'indeterminate' | 'done' | null;
+    aliases: string[];
+  } {
+    const s = input.toLowerCase().trim();
+
+    // "done" category — closed/finished/resolved/won't fix/cancelled etc.
+    if (/\b(done|clos|finish|complet|resolv|fix(ed)?|won.?t.?fix|cancel|archiv|deliver)\b/.test(s)) {
+      return {
+        categoryKey: 'done',
+        aliases: ['done', 'closed', 'resolved', 'finished', 'complete', 'fixed', "won't fix", 'cancelled', 'archived'],
+      };
+    }
+
+    // "indeterminate" category — in progress / started / working / review / testing etc.
+    if (/\b(in.?progress|in.?review|start|begin|work(ing)?|doing|active|wip|develop|review|test(ing)?|pick.?up|assign)\b/.test(s)) {
+      return {
+        categoryKey: 'indeterminate',
+        aliases: ['in progress', 'in development', 'in review', 'review', 'testing', 'started', 'active', 'wip'],
+      };
+    }
+
+    // "new" category — to do / backlog / reopen / not started etc.
+    if (/\b(to.?do|backlog|open|not.?start|todo|reopen|new|pending|unstart|queue|reset|undone)\b/.test(s)) {
+      return {
+        categoryKey: 'new',
+        aliases: ['to do', 'backlog', 'open', 'new', 'pending', 'not started', 'todo'],
+      };
+    }
+
+    return { categoryKey: null, aliases: [s] };
+  }
+
+  private async jiraUpdateTicket(task: AgentTask): Promise<unknown> {
+    // Supports three modes:
+    // 1) key / issueKey: update a single ticket
+    // 2) keys: update multiple explicit tickets
+    // 3) jql: search and update all matching tickets
+    if (!process.env.JIRA_BASE_URL || !process.env.JIRA_API_TOKEN || !process.env.JIRA_USER_EMAIL) {
+      return { error: 'Jira not configured', status: 'skipped' };
+    }
+
+    const explicitKeys = (task.parameters.keys as string[] | undefined)?.filter(Boolean) ?? [];
+    let keys: string[] = [];
+
+    if (explicitKeys.length > 0) {
+      keys = explicitKeys;
+    } else {
+      const singleKey =
+        (task.parameters.key as string | undefined) ??
+        (task.parameters.issueKey as string | undefined);
+
+      if (singleKey) {
+        keys = [singleKey];
+      } else if (task.parameters.jql && this.jira) {
+        const searchResults = await this.jira.searchTickets(task.parameters.jql as string);
+        keys = searchResults.map((r) => r.key);
+      }
+    }
+
+    if (keys.length === 0) {
+      throw new Error('jira_update_ticket requires a "key"/"keys" parameter or a "jql" query that selects issues');
+    }
+
+    const explicitStatus =
+      (task.parameters.newStatus as string | undefined) ??
+      (task.parameters.status as string | undefined) ??
+      undefined;
+
+    const baseUrl = process.env.JIRA_BASE_URL.replace(/\/+$/, '');
+    const auth = Buffer.from(
+      `${process.env.JIRA_USER_EMAIL}:${process.env.JIRA_API_TOKEN}`
+    ).toString('base64');
+
+    const results: Array<{
+      key: string;
+      status: 'updated' | 'skipped' | 'error';
+      transitionId?: string;
+      transitionName?: string;
+      newStatus?: string;
+      reason?: string;
+      error?: string;
+      availableTransitions?: Array<{ id: string; name: string; to?: string }>;
+    }> = [];
+
+    for (const key of keys) {
+      try {
+        // 1) Fetch available transitions for this issue
+        const transitionsRes = await fetch(
+          `${baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}/transitions`,
+          {
+            method: 'GET',
+            headers: {
+              'Authorization': `Basic ${auth}`,
+              'Accept': 'application/json',
+            },
+          }
+        );
+
+        if (!transitionsRes.ok) {
+          const text = await transitionsRes.text();
+          results.push({
+            key,
+            status: 'error',
+            error: `Failed to fetch transitions: HTTP ${transitionsRes.status} — ${text}`,
+          });
+          continue;
+        }
+
+        const transitionsJson = await transitionsRes.json() as {
+          transitions?: Array<{ id: string; name: string; to?: { name?: string; statusCategory?: { key?: string } } }>;
+        };
+
+        const transitions = transitionsJson.transitions ?? [];
+
+        type JiraTransition = { id: string; name: string; to?: { name?: string; statusCategory?: { key?: string } } };
+        let target: JiraTransition | undefined;
+        let effectiveStatus = explicitStatus;
+
+        if (explicitStatus) {
+          // 1. Try semantic intent resolution against statusCategory first (most reliable)
+          const { categoryKey } = this.resolveStatusIntent(explicitStatus);
+
+          if (categoryKey) {
+            // Map our intent categories to Jira's internal statusCategory keys
+            const jiraCategoryKey = categoryKey === 'indeterminate' ? 'indeterminate' : categoryKey;
+            target = transitions.find((t) =>
+              (t.to?.statusCategory?.key ?? '').toLowerCase() === jiraCategoryKey
+            );
+          }
+
+          if (!target) {
+            // 2. Try exact match on transition name or destination status name
+            const desired = explicitStatus.toLowerCase();
+            target = transitions.find((t) =>
+              (t.name ?? '').toLowerCase() === desired ||
+              (t.to?.name ?? '').toLowerCase() === desired
+            );
+          }
+
+          if (!target) {
+            // 3. Fuzzy alias match (e.g. "start it" → alias "in progress" → toName includes it)
+            const { aliases: intentAliases } = this.resolveStatusIntent(explicitStatus);
+            target = transitions.find((t) => {
+              const toName = (t.to?.name ?? '').toLowerCase();
+              const tName = (t.name ?? '').toLowerCase();
+              return intentAliases.some((a) => toName.includes(a) || tName.includes(a));
+            });
+          }
+
+          if (!target) {
+            // 4. Partial substring match as last resort
+            const desired = explicitStatus.toLowerCase();
+            target = transitions.find((t) =>
+              (t.name ?? '').toLowerCase().includes(desired) ||
+              (t.to?.name ?? '').toLowerCase().includes(desired)
+            );
+          }
+        } else {
+          // No status specified — default to "done" category (close/resolve)
+          const doneCandidates = transitions.filter((t) =>
+            (t.to?.statusCategory?.key ?? '').toLowerCase() === 'done'
+          );
+          if (doneCandidates.length > 0) {
+            target = doneCandidates[0];
+          } else {
+            const closeNames = ['done', 'closed', 'resolved'];
+            target = transitions.find((t) => {
+              const name = (t.name ?? '').toLowerCase();
+              const toName = (t.to?.name ?? '').toLowerCase();
+              return closeNames.includes(name) || closeNames.includes(toName);
+            });
+          }
+          if (target) {
+            effectiveStatus = target.to?.name ?? target.name ?? 'Done';
+          }
+        }
+
+        if (!target) {
+          results.push({
+            key,
+            status: 'skipped',
+            reason: `No workflow transition found to reach a closed/done state${explicitStatus ? ` ("${explicitStatus}")` : ''}.`,
+            availableTransitions: transitions.map((t) => ({
+              id: t.id,
+              name: t.name,
+              to: t.to?.name,
+            })),
+          });
+          continue;
+        }
+
+        // 2) Execute the transition
+        const transitionRes = await fetch(
+          `${baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}/transitions`,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Basic ${auth}`,
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              transition: { id: target.id },
+            }),
+          }
+        );
+
+        if (!transitionRes.ok) {
+          const text = await transitionRes.text();
+          results.push({
+            key,
+            status: 'error',
+            error: `Failed to update ticket: HTTP ${transitionRes.status} — ${text}`,
+          });
+          continue;
+        }
+
+        results.push({
+          key,
+          status: 'updated',
+          transitionId: target.id,
+          transitionName: target.name,
+          newStatus: effectiveStatus ?? explicitStatus ?? 'Done',
+        });
+      } catch (err) {
+        results.push({
+          key,
+          status: 'error',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const updated = results.filter((r) => r.status === 'updated').map((r) => r.key);
+
+    return {
+      action: 'jira_update_ticket',
+      status: updated.length > 0 ? 'updated' : 'skipped',
+      keys,
+      updated,
+      results,
+      desiredStatus: explicitStatus,
+    };
   }
 
   private async slackSendMessage(task: AgentTask): Promise<unknown> {
@@ -114,10 +422,226 @@ export class ExecutionAgent extends BaseAgent {
     return { action: 'slack_send_message', channel, ...result, status: 'sent' };
   }
 
-  private async slackListChannels(task: AgentTask): Promise<unknown> {
+  private async slackListChannels(_task: AgentTask): Promise<unknown> {
     if (!this.slack) return { error: 'Slack not configured', status: 'skipped' };
     const channels = await this.slack.listChannels();
     return { action: 'slack_list_channels', channels, count: channels.length };
+  }
+
+  private async slackReplyInThread(task: AgentTask): Promise<unknown> {
+    if (!this.slack) return { error: 'Slack not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.slack.replyInThread({
+      channel: p.channel as string,
+      threadTs: (p.threadTs ?? p.thread_ts) as string,
+      message: (p.message ?? p.text) as string,
+    });
+    return { action: 'slack_reply_in_thread', ...result, status: 'sent' };
+  }
+
+  private async slackSendDm(task: AgentTask): Promise<unknown> {
+    if (!this.slack) return { error: 'Slack not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.slack.sendDm({
+      userId: (p.userId ?? p.user) as string,
+      message: (p.message ?? p.text) as string,
+    });
+    return { action: 'slack_send_dm', ...result, status: 'sent' };
+  }
+
+  private async slackAddReaction(task: AgentTask): Promise<unknown> {
+    if (!this.slack) return { error: 'Slack not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.slack.addReaction({
+      channel: p.channel as string,
+      timestamp: (p.timestamp ?? p.ts) as string,
+      emoji: p.emoji as string,
+    });
+    return { action: 'slack_add_reaction', ...result, status: 'added' };
+  }
+
+  private async slackUploadFile(task: AgentTask): Promise<unknown> {
+    if (!this.slack) return { error: 'Slack not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.slack.uploadFile({
+      channel: p.channel as string,
+      filename: p.filename as string,
+      content: (p.content ?? p.text ?? '') as string,
+    });
+    return { action: 'slack_upload_file', ...result, status: 'uploaded' };
+  }
+
+  // ── Gmail ─────────────────────────────────────────────────────────────────
+
+  private async gmailSendEmail(task: AgentTask): Promise<unknown> {
+    if (!this.gmail) return { error: 'Gmail not configured', status: 'skipped' };
+    const p = task.parameters;
+    const to = Array.isArray(p.to) ? p.to as string[] : [(p.to ?? p.email) as string];
+    const result = await this.gmail.sendEmail({
+      to,
+      subject: p.subject as string,
+      body: (p.body ?? p.message ?? p.content) as string,
+      cc: p.cc as string[] | undefined,
+      bcc: p.bcc as string[] | undefined,
+    });
+    return { action: 'gmail_send_email', ...result, status: 'sent' };
+  }
+
+  private async gmailSearch(task: AgentTask): Promise<unknown> {
+    if (!this.gmail) return { error: 'Gmail not configured', status: 'skipped' };
+    const p = task.parameters;
+    const results = await this.gmail.searchEmails({
+      query: (p.query ?? p.q) as string,
+      maxResults: (p.maxResults ?? p.limit) as number | undefined,
+    });
+    return { action: 'gmail_search', results, count: results.length };
+  }
+
+  private async gmailReply(task: AgentTask): Promise<unknown> {
+    if (!this.gmail) return { error: 'Gmail not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.gmail.replyToEmail({
+      threadId: p.threadId as string,
+      inReplyToMessageId: (p.messageId ?? p.inReplyToMessageId) as string,
+      to: p.to as string,
+      subject: p.subject as string,
+      body: (p.body ?? p.message ?? p.content) as string,
+      cc: p.cc as string[] | undefined,
+    });
+    return { action: 'gmail_reply', ...result, status: 'sent' };
+  }
+
+  private async gmailModifyLabels(task: AgentTask): Promise<unknown> {
+    if (!this.gmail) return { error: 'Gmail not configured', status: 'skipped' };
+    const p = task.parameters;
+    const messageIds = Array.isArray(p.messageIds) ? p.messageIds as string[] : [(p.messageId ?? p.id) as string];
+    await this.gmail.modifyLabels({
+      messageIds,
+      addLabels: p.addLabels as string[] | undefined,
+      removeLabels: p.removeLabels as string[] | undefined,
+    });
+    return { action: 'gmail_modify_labels', messageIds, status: 'updated' };
+  }
+
+  // ── HubSpot ───────────────────────────────────────────────────────────────
+
+  private async hubspotCreateContact(task: AgentTask): Promise<unknown> {
+    if (!this.hubspot) return { error: 'HubSpot not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.hubspot.createContact({
+      email: p.email as string,
+      firstName: (p.firstName ?? p.firstname ?? '') as string,
+      lastName: (p.lastName ?? p.lastname ?? '') as string,
+      company: p.company as string | undefined,
+      phone: p.phone as string | undefined,
+      jobTitle: (p.jobTitle ?? p.job_title) as string | undefined,
+    });
+    return { action: 'hubspot_create_contact', ...result, status: 'created' };
+  }
+
+  private async hubspotSearchContacts(task: AgentTask): Promise<unknown> {
+    if (!this.hubspot) return { error: 'HubSpot not configured', status: 'skipped' };
+    const results = await this.hubspot.searchContacts((task.parameters.query ?? task.parameters.q) as string);
+    return { action: 'hubspot_search_contacts', results, count: results.length };
+  }
+
+  private async hubspotUpdateContact(task: AgentTask): Promise<unknown> {
+    if (!this.hubspot) return { error: 'HubSpot not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.hubspot.updateContact({
+      id: p.id as string,
+      fields: {
+        email: p.email as string | undefined,
+        firstName: (p.firstName ?? p.firstname) as string | undefined,
+        lastName: (p.lastName ?? p.lastname) as string | undefined,
+        company: p.company as string | undefined,
+        phone: p.phone as string | undefined,
+        jobTitle: (p.jobTitle ?? p.job_title) as string | undefined,
+      },
+    });
+    return { action: 'hubspot_update_contact', ...result, status: 'updated' };
+  }
+
+  private async hubspotCreateDeal(task: AgentTask): Promise<unknown> {
+    if (!this.hubspot) return { error: 'HubSpot not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.hubspot.createDeal({
+      name: (p.name ?? p.dealname) as string,
+      amount: p.amount as number | undefined,
+      stage: (p.stage ?? p.dealstage) as string | undefined,
+      pipeline: p.pipeline as string | undefined,
+      closeDate: (p.closeDate ?? p.close_date) as string | undefined,
+      contactId: (p.contactId ?? p.contact_id) as string | undefined,
+    });
+    return { action: 'hubspot_create_deal', ...result, status: 'created' };
+  }
+
+  private async hubspotSearchDeals(task: AgentTask): Promise<unknown> {
+    if (!this.hubspot) return { error: 'HubSpot not configured', status: 'skipped' };
+    const results = await this.hubspot.searchDeals((task.parameters.query ?? task.parameters.q) as string);
+    return { action: 'hubspot_search_deals', results, count: results.length };
+  }
+
+  private async hubspotUpdateDeal(task: AgentTask): Promise<unknown> {
+    if (!this.hubspot) return { error: 'HubSpot not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.hubspot.updateDeal({
+      id: p.id as string,
+      fields: (p.fields ?? p.properties ?? {}) as Record<string, string | number>,
+    });
+    return { action: 'hubspot_update_deal', ...result, status: 'updated' };
+  }
+
+  private async hubspotLogActivity(task: AgentTask): Promise<unknown> {
+    if (!this.hubspot) return { error: 'HubSpot not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.hubspot.logActivity({
+      note: (p.note ?? p.body ?? p.message ?? p.content) as string,
+      dealId: (p.dealId ?? p.deal_id) as string | undefined,
+      contactId: (p.contactId ?? p.contact_id) as string | undefined,
+    });
+    return { action: 'hubspot_log_activity', ...result, status: 'logged' };
+  }
+
+  // ── Notion ────────────────────────────────────────────────────────────────
+
+  private async notionSearch(task: AgentTask): Promise<unknown> {
+    if (!this.notion) return { error: 'Notion not configured', status: 'skipped' };
+    const results = await this.notion.search((task.parameters.query ?? task.parameters.q) as string);
+    return { action: 'notion_search', results, count: results.length };
+  }
+
+  private async notionCreatePage(task: AgentTask): Promise<unknown> {
+    if (!this.notion) return { error: 'Notion not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.notion.createPage({
+      title: p.title as string,
+      content: (p.content ?? p.body ?? '') as string,
+      parentId: (p.parentId ?? p.parent_id) as string | undefined,
+    });
+    return { action: 'notion_create_page', ...result, status: 'created' };
+  }
+
+  private async notionUpdatePage(task: AgentTask): Promise<unknown> {
+    if (!this.notion) return { error: 'Notion not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.notion.updatePage({
+      pageId: (p.pageId ?? p.page_id ?? p.id) as string,
+      title: p.title as string | undefined,
+      properties: p.properties as Record<string, unknown> | undefined,
+      archived: p.archived as boolean | undefined,
+    });
+    return { action: 'notion_update_page', ...result, status: 'updated' };
+  }
+
+  private async notionAppendBlock(task: AgentTask): Promise<unknown> {
+    if (!this.notion) return { error: 'Notion not configured', status: 'skipped' };
+    const p = task.parameters;
+    const result = await this.notion.appendBlock({
+      blockId: (p.blockId ?? p.block_id ?? p.pageId ?? p.page_id ?? p.id) as string,
+      content: (p.content ?? p.body ?? p.text ?? '') as string,
+    });
+    return { action: 'notion_append_block', ...result, status: 'appended' };
   }
 
   // ── Automation runner bridge ─────────────────────────────────────────────
@@ -260,11 +784,35 @@ export class ExecutionAgent extends BaseAgent {
 
   getCapabilities(): AgentCapability[] {
     return [
-      // Direct connector actions (preferred — fast, reliable)
-      { name: 'jira_create_ticket', description: 'Create a Jira ticket via REST API', parameters: { summary: { type: 'string', description: 'Ticket title/summary', required: true }, description: { type: 'string', description: 'Ticket description', required: false }, issueType: { type: 'string', description: 'Issue type (Task, Bug, Story)', required: false }, priority: { type: 'string', description: 'Priority (Highest, High, Medium, Low, Lowest)', required: false }, labels: { type: 'array', description: 'Labels', required: false } } },
-      { name: 'jira_search', description: 'Search Jira tickets using JQL', parameters: { jql: { type: 'string', description: 'JQL query string', required: true } } },
-      { name: 'slack_send_message', description: 'Send a Slack message to a channel', parameters: { channel: { type: 'string', description: 'Channel name or ID', required: true }, message: { type: 'string', description: 'Message text', required: true } } },
+      // ── Jira ──
+      { name: 'jira_create_ticket', description: 'Create a Jira ticket', parameters: { summary: { type: 'string', description: 'Ticket summary', required: true }, description: { type: 'string', description: 'Description', required: false }, issueType: { type: 'string', description: 'Bug|Task|Story', required: false }, priority: { type: 'string', description: 'Highest|High|Medium|Low|Lowest', required: false }, labels: { type: 'array', description: 'Labels', required: false } } },
+      { name: 'jira_search', description: 'Search Jira tickets using JQL', parameters: { jql: { type: 'string', description: 'JQL query', required: true } } },
+      { name: 'jira_update_ticket', description: 'Transition Jira ticket(s) to a new status', parameters: { key: { type: 'string', description: 'Single issue key', required: false }, keys: { type: 'array', description: 'Array of issue keys', required: false }, jql: { type: 'string', description: 'JQL to select issues', required: false }, newStatus: { type: 'string', description: 'Target status intent e.g. Done, In Progress, To Do', required: false } } },
+      // ── Slack ──
+      { name: 'slack_send_message', description: 'Send a Slack message to a channel', parameters: { channel: { type: 'string', description: 'Channel name (no #)', required: true }, message: { type: 'string', description: 'Message text', required: true } } },
       { name: 'slack_list_channels', description: 'List available Slack channels', parameters: {} },
+      { name: 'slack_reply_in_thread', description: 'Reply to a Slack thread', parameters: { channel: { type: 'string', description: 'Channel name or ID', required: true }, threadTs: { type: 'string', description: 'Parent message timestamp', required: true }, message: { type: 'string', description: 'Reply text', required: true } } },
+      { name: 'slack_send_dm', description: 'Send a Slack DM to a user', parameters: { userId: { type: 'string', description: 'Slack user ID', required: true }, message: { type: 'string', description: 'Message text', required: true } } },
+      { name: 'slack_add_reaction', description: 'Add emoji reaction to a Slack message', parameters: { channel: { type: 'string', description: 'Channel ID', required: true }, timestamp: { type: 'string', description: 'Message timestamp', required: true }, emoji: { type: 'string', description: 'Emoji name without colons', required: true } } },
+      { name: 'slack_upload_file', description: 'Upload a file to a Slack channel', parameters: { channel: { type: 'string', description: 'Channel name or ID', required: true }, filename: { type: 'string', description: 'Filename', required: true }, content: { type: 'string', description: 'File text content', required: true } } },
+      // ── Gmail ──
+      { name: 'gmail_send_email', description: 'Send an email via Gmail', parameters: { to: { type: 'array', description: 'Recipient addresses', required: true }, subject: { type: 'string', description: 'Subject line', required: true }, body: { type: 'string', description: 'Email body', required: true }, cc: { type: 'array', description: 'CC addresses', required: false }, bcc: { type: 'array', description: 'BCC addresses', required: false } } },
+      { name: 'gmail_search', description: 'Search Gmail messages', parameters: { query: { type: 'string', description: 'Gmail search query', required: true }, maxResults: { type: 'number', description: 'Max results', required: false } } },
+      { name: 'gmail_reply', description: 'Reply to a Gmail thread', parameters: { threadId: { type: 'string', description: 'Thread ID', required: true }, messageId: { type: 'string', description: 'Message-ID header value', required: true }, to: { type: 'string', description: 'Reply-to address', required: true }, subject: { type: 'string', description: 'Subject', required: true }, body: { type: 'string', description: 'Reply body', required: true } } },
+      { name: 'gmail_modify_labels', description: 'Add or remove Gmail labels', parameters: { messageIds: { type: 'array', description: 'Message IDs', required: true }, addLabels: { type: 'array', description: 'Label IDs to add', required: false }, removeLabels: { type: 'array', description: 'Label IDs to remove', required: false } } },
+      // ── HubSpot ──
+      { name: 'hubspot_create_contact', description: 'Create a HubSpot contact', parameters: { email: { type: 'string', description: 'Email address', required: true }, firstName: { type: 'string', description: 'First name', required: false }, lastName: { type: 'string', description: 'Last name', required: false }, company: { type: 'string', description: 'Company', required: false } } },
+      { name: 'hubspot_search_contacts', description: 'Search HubSpot contacts', parameters: { query: { type: 'string', description: 'Search query', required: true } } },
+      { name: 'hubspot_update_contact', description: 'Update a HubSpot contact', parameters: { id: { type: 'string', description: 'Contact ID', required: true }, email: { type: 'string', description: 'Email', required: false }, firstName: { type: 'string', description: 'First name', required: false }, lastName: { type: 'string', description: 'Last name', required: false } } },
+      { name: 'hubspot_create_deal', description: 'Create a HubSpot deal', parameters: { name: { type: 'string', description: 'Deal name', required: true }, amount: { type: 'number', description: 'Deal amount', required: false }, stage: { type: 'string', description: 'Deal stage', required: false }, pipeline: { type: 'string', description: 'Pipeline ID', required: false }, contactId: { type: 'string', description: 'Associated contact ID', required: false } } },
+      { name: 'hubspot_search_deals', description: 'Search HubSpot deals', parameters: { query: { type: 'string', description: 'Search query', required: true } } },
+      { name: 'hubspot_update_deal', description: 'Update a HubSpot deal', parameters: { id: { type: 'string', description: 'Deal ID', required: true }, fields: { type: 'object', description: 'HubSpot property key-value pairs', required: true } } },
+      { name: 'hubspot_log_activity', description: 'Log a note on a HubSpot deal or contact', parameters: { note: { type: 'string', description: 'Note body', required: true }, dealId: { type: 'string', description: 'Deal ID', required: false }, contactId: { type: 'string', description: 'Contact ID', required: false } } },
+      // ── Notion ──
+      { name: 'notion_search', description: 'Search Notion pages and databases', parameters: { query: { type: 'string', description: 'Search query', required: true } } },
+      { name: 'notion_create_page', description: 'Create a Notion page', parameters: { title: { type: 'string', description: 'Page title', required: true }, content: { type: 'string', description: 'Initial page content', required: false }, parentId: { type: 'string', description: 'Parent page ID', required: false } } },
+      { name: 'notion_update_page', description: 'Update a Notion page title or properties', parameters: { pageId: { type: 'string', description: 'Page ID', required: true }, title: { type: 'string', description: 'New title', required: false }, archived: { type: 'boolean', description: 'Archive the page', required: false } } },
+      { name: 'notion_append_block', description: 'Append text to a Notion page', parameters: { blockId: { type: 'string', description: 'Block or page ID', required: true }, content: { type: 'string', description: 'Text to append', required: true } } },
       // Browser automation actions (fallback — Nova Act)
       { name: 'open_app', description: 'Open a web application in the browser', parameters: { app: { type: 'string', description: 'Application name', required: true }, url: { type: 'string', description: 'Direct URL', required: false } } },
       { name: 'navigate', description: 'Navigate to a URL', parameters: { url: { type: 'string', description: 'Target URL', required: true } } },

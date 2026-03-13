@@ -29,6 +29,7 @@ export class Orchestrator {
   private agentPool: AgentPool;
   private config: OrchestratorConfig;
   private activeTasks: Map<string, TaskGraph> = new Map();
+  private sessionHistory: Map<string, Array<{ userInput: string; assistantOutput: string }>> = new Map();
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -51,13 +52,15 @@ export class Orchestrator {
 
     // Chat responses skip task execution entirely
     if (planResult.type === 'chat') {
-      emit({ phase: 'chat', message: planResult.chatResponse ?? '' });
+      const chatResponse = planResult.chatResponse ?? '';
+      emit({ phase: 'chat', message: chatResponse });
+      this.appendHistory(request.sessionId, request.input, chatResponse);
       return {
         sessionId: request.sessionId,
         taskGraph: { nodes: [], createdAt: Date.now() },
         status: 'completed',
         results: [],
-        message: planResult.chatResponse ?? '',
+        message: chatResponse,
       };
     }
 
@@ -80,6 +83,8 @@ export class Orchestrator {
       message: summaryMessage,
     });
 
+    this.appendHistory(request.sessionId, request.input, summaryMessage);
+
     return {
       sessionId: request.sessionId,
       taskGraph,
@@ -87,6 +92,14 @@ export class Orchestrator {
       results,
       message: summaryMessage,
     };
+  }
+
+  private appendHistory(sessionId: string, userInput: string, assistantOutput: string): void {
+    const turns = this.sessionHistory.get(sessionId) ?? [];
+    turns.push({ userInput, assistantOutput });
+    // Keep last 10 turns to stay within token limits
+    if (turns.length > 10) turns.splice(0, turns.length - 10);
+    this.sessionHistory.set(sessionId, turns);
   }
 
   /**
@@ -106,10 +119,18 @@ export class Orchestrator {
       targetApp: request.targetApp,
     });
 
+    // Build conversation history as alternating user/assistant turns
+    const history = this.sessionHistory.get(request.sessionId) ?? [];
+    const priorMessages = history.flatMap((turn) => ([
+      { role: 'user' as const, content: [{ text: turn.userInput }] },
+      { role: 'assistant' as const, content: [{ text: turn.assistantOutput }] },
+    ]));
+
     const command = new ConverseCommand({
       modelId: this.config.novaLiteModelId,
       system: [{ text: buildSystemPrompt(this.config.jiraProjectKey) }],
       messages: [
+        ...priorMessages,
         {
           role: 'user',
           content: [{ text: userPrompt }],
@@ -310,68 +331,157 @@ export class Orchestrator {
 
   /**
    * Build a human-readable summary for the orchestrator response.
-   * Special-case Jira search so callers get an actual ticket summary,
-   * and always return at least two sentences so the UI has something
-   * conversational to show.
+   * Handles all connector search actions with meaningful natural-language output.
    */
+  private cleanSnippet(text: string, maxLen = 100): string {
+    return text
+      .replace(/[\u034F\u200B\u200C\u200D\uFEFF\u00AD]+/g, '') // invisible chars & soft hyphens
+      .replace(/\s{2,}/g, ' ')                                   // collapse whitespace
+      .trim()
+      .slice(0, maxLen);
+  }
+
   private buildSummaryMessage(results: TaskResult[], allSucceeded: boolean): string {
-    // Look for successful execution results from jira_search
-    const jiraSearchResults = results.filter(
-      (r) =>
-        r.status === 'success' &&
-        r.agentType === 'execution' &&
-        r.output &&
-        (r.output as any).action === 'jira_search'
+    const succeeded = results.filter(
+      (r) => r.status === 'success' && r.agentType === 'execution' && r.output
     );
 
-    if (jiraSearchResults.length > 0) {
-      const jiraTickets = jiraSearchResults
-        .map((r) => (r.output as any).results as Array<{
-          key?: string;
-          summary?: string;
-          status?: string;
-        }> | undefined)
-        .filter((arr): arr is Array<{ key?: string; summary?: string; status?: string }> => Array.isArray(arr))
-        .flat()
-        .filter(Boolean);
+    const messages: string[] = [];
 
-      // Use explicit count when provided by the connector; fall back to ticket array length.
-      const explicitCounts = jiraSearchResults
-        .map((r) => (r.output as any).count as number | undefined)
-        .filter((n): n is number => typeof n === 'number' && !Number.isNaN(n));
+    for (const r of succeeded) {
+      const out = r.output as Record<string, unknown>;
+      const action = out.action as string | undefined;
+      if (!action) continue;
 
-      const totalCount = explicitCounts.length > 0 ? explicitCounts[0] : jiraTickets.length;
+      // ── Jira search ──────────────────────────────────────────────────────
+      if (action === 'jira_search') {
+        const count = out.count as number ?? 0;
+        const items = (out.results as Array<{ key?: string; summary?: string; status?: string }>) ?? [];
 
-      if (totalCount === 0) {
-        // User asked something like "how many ...?" — make 0 explicit and encouraging.
-        return [
-          'I did not find any Jira tickets matching your request.',
-          'If you expected results, check the project key, status filter, or try broadening the search.',
-        ].join(' ');
+        if (count === 0) {
+          const fallback = out.allResults as Array<{ key?: string; summary?: string; status?: string }> | undefined;
+          if (fallback && fallback.length > 0) {
+            const byStatus = new Map<string, string[]>();
+            for (const t of fallback) {
+              const s = t.status ?? 'Unknown';
+              if (!byStatus.has(s)) byStatus.set(s, []);
+              byStatus.get(s)!.push(t.key ?? '?');
+            }
+            const breakdown = [...byStatus.entries()]
+              .map(([s, keys]) => `${keys.length} ${s} (${keys.slice(0, 4).join(', ')}${keys.length > 4 ? '…' : ''})`)
+              .join(', ');
+            messages.push(`No open tickets — none in progress or to do. Found ${fallback.length} ticket${fallback.length === 1 ? '' : 's'} total: ${breakdown}.`);
+          } else {
+            messages.push('No Jira tickets found matching that filter.');
+          }
+          continue;
+        }
+
+        const header = count === 1 ? 'Found 1 Jira ticket.' : `Found ${count} Jira tickets.`;
+        const lines = items.slice(0, 5).map(
+          (t) => `- ${t.key ?? '?'} [${t.status ?? 'Unknown'}] — ${t.summary ?? '(no summary)'}`
+        );
+        const more = count > 5 ? `\n…and ${count - 5} more.` : '';
+        messages.push(`${header} Here are the most relevant ones:\n${lines.join('\n')}${more}`);
+        continue;
       }
 
-      const header =
-        totalCount === 1
-          ? 'I found 1 Jira ticket.'
-          : `I found ${totalCount} Jira tickets.`;
+      // ── Gmail search ─────────────────────────────────────────────────────
+      if (action === 'gmail_search') {
+        const count = out.count as number ?? 0;
+        const items = (out.results as Array<{ subject?: string; from?: string; snippet?: string }>) ?? [];
+        if (count === 0) {
+          messages.push('No emails found matching that search.');
+          continue;
+        }
+        const header = count === 1 ? 'Found 1 email.' : `Found ${count} emails.`;
+        const lines = items.slice(0, 5).map(
+          (e) => `- "${e.subject ?? '(no subject)'}" from ${e.from ?? 'unknown'}${e.snippet ? ` — ${this.cleanSnippet(e.snippet)}` : ''}`
+        );
+        const more = count > 5 ? `\n…and ${count - 5} more.` : '';
+        messages.push(`${header}\n${lines.join('\n')}${more}`);
+        continue;
+      }
 
-      const lines = jiraTickets.slice(0, 5).map((t) => {
-        const key = t.key ?? '(no key)';
-        const status = t.status ?? 'Unknown';
-        const summary = t.summary ?? '(no summary)';
-        return `- ${key} [${status}] — ${summary}`;
-      });
+      // ── HubSpot contacts search ───────────────────────────────────────────
+      if (action === 'hubspot_search_contacts') {
+        const count = out.count as number ?? 0;
+        const items = (out.results as Array<{ id?: string; firstName?: string; lastName?: string; email?: string; company?: string }>) ?? [];
+        if (count === 0) {
+          messages.push('No HubSpot contacts found matching that search.');
+          continue;
+        }
+        const header = count === 1 ? 'Found 1 contact.' : `Found ${count} contacts.`;
+        const lines = items.slice(0, 5).map((c) => {
+          const name = [c.firstName, c.lastName].filter(Boolean).join(' ') || c.email || c.id || '?';
+          return `- ${name}${c.company ? ` (${c.company})` : ''}${c.email ? ` <${c.email}>` : ''}`;
+        });
+        messages.push(`${header}\n${lines.join('\n')}${count > 5 ? `\n…and ${count - 5} more.` : ''}`);
+        continue;
+      }
 
-      const remainder =
-        totalCount > 5 ? `\n…and ${totalCount - 5} more beyond the first few listed here.` : '';
+      // ── HubSpot deals search ──────────────────────────────────────────────
+      if (action === 'hubspot_search_deals') {
+        const count = out.count as number ?? 0;
+        const items = (out.results as Array<{ id?: string; name?: string; stage?: string; amount?: number }>) ?? [];
+        if (count === 0) {
+          messages.push('No HubSpot deals found matching that search.');
+          continue;
+        }
+        const header = count === 1 ? 'Found 1 deal.' : `Found ${count} deals.`;
+        const lines = items.slice(0, 5).map((d) =>
+          `- ${d.name ?? d.id ?? '?'}${d.stage ? ` [${d.stage}]` : ''}${d.amount != null ? ` — $${d.amount}` : ''}`
+        );
+        messages.push(`${header}\n${lines.join('\n')}${count > 5 ? `\n…and ${count - 5} more.` : ''}`);
+        continue;
+      }
 
-      return `${header} Here are the most relevant ones:\n${lines.join('\n')}${remainder}`;
+      // ── Notion search ─────────────────────────────────────────────────────
+      if (action === 'notion_search') {
+        const count = out.count as number ?? 0;
+        const items = (out.results as Array<{ id?: string; title?: string; url?: string }>) ?? [];
+        if (count === 0) {
+          messages.push('No Notion pages found matching that search.');
+          continue;
+        }
+        const header = count === 1 ? 'Found 1 Notion page.' : `Found ${count} Notion pages.`;
+        const lines = items.slice(0, 5).map((p) => `- ${p.title ?? p.id ?? '(untitled)'}`);
+        messages.push(`${header}\n${lines.join('\n')}${count > 5 ? `\n…and ${count - 5} more.` : ''}`);
+        continue;
+      }
+
+      // ── Slack list channels ───────────────────────────────────────────────
+      if (action === 'slack_list_channels') {
+        const channels = (out.channels as Array<{ name?: string; id?: string }>) ?? [];
+        if (channels.length === 0) {
+          messages.push('No Slack channels found.');
+          continue;
+        }
+        const names = channels.slice(0, 8).map((c) => `#${c.name ?? c.id}`).join(', ');
+        const more = channels.length > 8 ? ` and ${channels.length - 8} more` : '';
+        messages.push(`Found ${channels.length} Slack channel${channels.length === 1 ? '' : 's'}: ${names}${more}.`);
+        continue;
+      }
+
+      // ── Write/create/update actions — brief confirmation ─────────────────
+      if (['jira_create_ticket', 'slack_send_message', 'slack_send_dm', 'gmail_send_email',
+           'hubspot_create_contact', 'hubspot_create_deal', 'notion_create_page',
+           'jira_update_ticket', 'hubspot_update_contact', 'hubspot_update_deal',
+           'notion_update_page', 'notion_append_block', 'gmail_reply', 'gmail_modify_labels',
+           'hubspot_log_activity', 'slack_reply_in_thread', 'slack_upload_file'].includes(action)) {
+        // These are confirmed by status — don't add noise, let the generic success handle it
+        continue;
+      }
     }
 
-    // Fallback generic messages — always at least two sentences.
+    if (messages.length > 0) {
+      return messages.join('\n\n');
+    }
+
+    // Generic success/fail for write/action tasks
     if (allSucceeded) {
-      return 'All tasks completed successfully. Everything ran end-to-end without errors, and you can inspect individual steps in the task history for more detail.';
+      return 'Done. All tasks completed successfully.';
     }
-    return 'Some tasks failed during execution. Open the task details to see which steps had issues and any associated error messages so you can follow up.';
+    return 'Some tasks failed. Check the task history for details.';
   }
 }

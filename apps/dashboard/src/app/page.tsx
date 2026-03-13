@@ -162,7 +162,11 @@ export default function DashboardPage() {
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [micState, setMicState] = useState<'idle' | 'connecting' | 'listening'>('idle');
   const [greeting, setGreeting] = useState<Pair>(['', '']);
+  const [miniMode, setMiniMode] = useState(false);
   useEffect(() => { setGreeting(pickGreeting()); }, []);
+
+  // Stable session ID for the entire browser session — persists across tasks
+  const sessionIdRef = useRef<string>(`session_${Date.now()}_${Math.random().toString(36).slice(2)}`);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -259,7 +263,7 @@ export default function DashboardPage() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input, sessionId: taskId }),
+        body: JSON.stringify({ input, sessionId: sessionIdRef.current }),
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -523,7 +527,7 @@ export default function DashboardPage() {
       {/* ── Top bar ── */}
       <header style={{
         padding: '1.5rem 2rem',
-        display: 'flex',
+        display: miniMode ? 'none' : 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
       }}>
@@ -566,13 +570,32 @@ export default function DashboardPage() {
               {metrics.totalTasks} tasks · {Math.round(metrics.successRate * 100)}%
             </span>
           )}
+          {/* Mini mode toggle */}
+          <button
+            onClick={() => setMiniMode(true)}
+            aria-label="Compact mode"
+            title="Compact mode"
+            style={{
+              background: 'transparent', border: 'none', color: '#282828',
+              cursor: 'pointer', padding: '4px', outline: 'none',
+              display: 'flex', alignItems: 'center', marginLeft: '0.5rem',
+              transition: 'color 0.2s',
+            }}
+          >
+            {/* compress / minimize icon */}
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" />
+              <line x1="10" y1="14" x2="3" y2="21" /><line x1="21" y1="3" x2="14" y2="10" />
+            </svg>
+          </button>
         </div>
       </header>
 
       {/* ── Hero ── */}
       <main style={{
+        display: miniMode ? 'none' : 'flex',
         flex: 1,
-        display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
@@ -712,8 +735,100 @@ export default function DashboardPage() {
         </div>
       </main>
 
+      {/* ── Mini mode pill floater ── */}
+      {miniMode && (
+        <div style={{
+          position: 'fixed', bottom: 32, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 100,
+          display: 'flex', alignItems: 'center', gap: '0.75rem',
+          background: 'rgba(8,8,8,0.92)',
+          border: '1px solid #1e1e1e',
+          borderRadius: 40,
+          padding: '10px 18px 10px 14px',
+          backdropFilter: 'blur(16px)',
+          WebkitBackdropFilter: 'blur(16px)',
+          boxShadow: '0 4px 32px rgba(0,0,0,0.6)',
+          minWidth: 260, maxWidth: 400,
+          userSelect: 'none',
+        }}>
+          {/* Mic button — compact */}
+          <button
+            onClick={() => micState !== 'idle' ? stopListening() : startListening()}
+            aria-label={micState !== 'idle' ? 'Stop listening' : 'Start voice command'}
+            disabled={micState === 'connecting'}
+            style={{
+              flexShrink: 0,
+              width: 36, height: 36, borderRadius: '50%',
+              background: 'transparent',
+              border: `1.5px solid ${micState === 'listening' ? '#555' : micState === 'connecting' ? '#2a2a2a' : '#2a2a2a'}`,
+              color: micState === 'listening' ? '#aaa' : '#555',
+              cursor: micState === 'connecting' ? 'default' : 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'border-color 0.4s, color 0.4s',
+              outline: 'none', position: 'relative',
+            }}
+          >
+            {micState === 'listening' && (
+              <span style={{
+                position: 'absolute', width: 36, height: 36, borderRadius: '50%',
+                border: '1px solid #444',
+                animation: 'expandRing 2.4s ease-out infinite',
+                pointerEvents: 'none',
+              }} />
+            )}
+            <span style={{ opacity: micState === 'connecting' ? 0 : 1, transition: 'opacity 0.35s', display: 'flex' }}>
+              <MicIcon size={14} />
+            </span>
+            <span style={{ position: 'absolute', opacity: micState === 'connecting' ? 1 : 0, transition: 'opacity 0.35s', display: 'flex' }}>
+              <span className="mic-throbber" style={{ width: 12, height: 12 } as React.CSSProperties} />
+            </span>
+          </button>
+
+          {/* Status / transcript text */}
+          <span style={{
+            flex: 1, minWidth: 0,
+            fontSize: '0.72rem', fontWeight: 300, color: transcript ? '#909090' : '#2e2e2e',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            letterSpacing: '-0.01em',
+          }}>
+            {transcript
+              ? transcript
+              : isProcessing
+                ? tasks.find((t) => t.status === 'running')?.command ?? 'processing…'
+                : 'TalOS'}
+          </span>
+
+          {/* Agent activity dot */}
+          {isProcessing && (
+            <span style={{
+              width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+              background: '#606060', boxShadow: '0 0 6px #60606060',
+            }} />
+          )}
+
+          {/* Expand button */}
+          <button
+            onClick={() => setMiniMode(false)}
+            aria-label="Expand dashboard"
+            title="Expand"
+            style={{
+              flexShrink: 0, background: 'transparent', border: 'none',
+              color: '#2a2a2a', cursor: 'pointer', padding: '2px',
+              outline: 'none', display: 'flex', alignItems: 'center',
+              transition: 'color 0.2s',
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" />
+              <line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* ── Floating task feed (latest task, auto-fades) ── */}
-      {visibleTasks.length > 0 && !taskPanelOpen && (
+      {visibleTasks.length > 0 && !taskPanelOpen && !miniMode && (
         <div style={{
           position: 'fixed', bottom: 48, left: '50%', transform: 'translateX(-50%)',
           maxWidth: 480, width: '90%', zIndex: 10,
@@ -802,7 +917,7 @@ export default function DashboardPage() {
       )}
 
       {/* ── Task panel toggle (bottom center) ── */}
-      {tasks.length > 0 && (
+      {tasks.length > 0 && !miniMode && (
         <button
           onClick={() => setTaskPanelOpen((v) => !v)}
           aria-label={taskPanelOpen ? 'Close task panel' : 'Open task panel'}
@@ -822,7 +937,7 @@ export default function DashboardPage() {
       )}
 
       {/* ── Full task panel (slide up) ── */}
-      {taskPanelOpen && (
+      {taskPanelOpen && !miniMode && (
         <div style={{
           position: 'fixed', bottom: 0, left: 0, right: 0,
           zIndex: 15, maxHeight: '40vh', overflowY: 'auto',
