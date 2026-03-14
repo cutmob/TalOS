@@ -374,7 +374,14 @@ export class Orchestrator {
   private cleanSnippet(text: string, maxLen = 100): string {
     return text
       .replace(/[\u034F\u200B\u200C\u200D\uFEFF\u00AD]+/g, '') // invisible chars & soft hyphens
-      .replace(/\s{2,}/g, ' ')                                   // collapse whitespace
+      .replace(/<@[A-Z0-9]+>/g, '@user')                        // Slack user mentions <@U123>
+      .replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1')                // Slack channel mentions <#C123|name>
+      .replace(/!\[.*?\]\(.*?\)/g, '[image]')                   // markdown images
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')                  // markdown links → label only
+      .replace(/^#{1,6}\s+/gm, '')                              // markdown headings
+      .replace(/[*_`~]{1,3}([^*_`~]+)[*_`~]{1,3}/g, '$1')     // bold/italic/code spans
+      .replace(/^\s*[-*+]\s+/gm, '')                            // markdown list bullets
+      .replace(/\s{2,}/g, ' ')                                  // collapse whitespace
       .trim()
       .slice(0, maxLen);
   }
@@ -635,8 +642,10 @@ export class Orchestrator {
         continue;
       }
       if (action === 'hubspot_create_contact') {
-        const id = out.id as string | undefined;
-        messages.push(`HubSpot contact created${id ? ` (id: ${id})` : ''}.`);
+        const firstName = out.firstName as string | undefined;
+        const lastName = out.lastName as string | undefined;
+        const name = [firstName, lastName].filter(Boolean).join(' ');
+        messages.push(`HubSpot contact created${name ? ` for ${name}` : ''}.`);
         continue;
       }
       if (action === 'hubspot_update_contact') {
@@ -644,8 +653,8 @@ export class Orchestrator {
         continue;
       }
       if (action === 'hubspot_create_deal') {
-        const id = out.id as string | undefined;
-        messages.push(`HubSpot deal created${id ? ` (id: ${id})` : ''}.`);
+        const dealName = out.name as string | undefined;
+        messages.push(`HubSpot deal created${dealName ? `: "${dealName}"` : ''}.`);
         continue;
       }
       if (action === 'hubspot_update_deal') {
@@ -667,6 +676,33 @@ export class Orchestrator {
       }
       if (action === 'notion_append_block') {
         messages.push('Content appended to Notion page.');
+        continue;
+      }
+
+      // ── HubSpot generic object search ─────────────────────────────────────
+      if (action === 'hubspot_search_objects') {
+        const objectType = (out.objectType as string | undefined) ?? 'records';
+        const count = (out.count as number) ?? 0;
+        const items = (out.results as Array<{ name?: string; email?: string; id?: string }>) ?? [];
+        if (count === 0) {
+          messages.push(`No HubSpot ${objectType} found matching that search.`);
+          continue;
+        }
+        const names = items.slice(0, 5).map((i) => i.name || i.email || i.id || '?').join(', ');
+        messages.push(`Found ${count} HubSpot ${objectType}: ${names}${count > 5 ? `, and ${count - 5} more` : ''}.`);
+        continue;
+      }
+
+      // ── HubSpot list properties ───────────────────────────────────────────
+      if (action === 'hubspot_list_properties') {
+        const objectType = (out.objectType as string | undefined) ?? 'object';
+        const props = (out.properties as Array<{ name?: string; label?: string }>) ?? [];
+        if (props.length === 0) {
+          messages.push(`No properties found for HubSpot ${objectType}.`);
+          continue;
+        }
+        const names = props.slice(0, 8).map((p) => p.label || p.name || '?').join(', ');
+        messages.push(`HubSpot ${objectType} has ${props.length} properties including: ${names}${props.length > 8 ? '…' : ''}.`);
         continue;
       }
     }
