@@ -741,7 +741,7 @@ export class ExecutionAgent extends BaseAgent {
       pageId: (p.pageId ?? p.page_id ?? p.id) as string,
       title: p.title as string | undefined,
       properties: p.properties as Record<string, unknown> | undefined,
-      archived: p.archived as boolean | undefined,
+      in_trash: (p.in_trash ?? p.archived) as boolean | undefined,
     });
     return { action: 'notion_update_page', ...result, status: 'updated' };
   }

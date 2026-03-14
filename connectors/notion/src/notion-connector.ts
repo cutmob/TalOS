@@ -13,7 +13,7 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
 }
 
 const BASE = 'https://api.notion.com/v1';
-const NOTION_VERSION = '2022-06-28';
+const NOTION_VERSION = '2026-03-11';
 
 export class NotionConnector {
   private config: NotionConfig;
@@ -70,22 +70,23 @@ export class NotionConnector {
     }));
   }
 
-  // ── GET /v1/pages/{pageId} + GET /v1/blocks/{pageId}/children ────────────
+  // ── GET /v1/pages/{pageId}/markdown (2026-03-11+) ───────────────────────
+  // Uses the markdown endpoint introduced in 2026 — much simpler than block API,
+  // returns full nested content including child page text in one request.
+  // Falls back to metadata-only if the endpoint returns 404 (older page types).
   async readPage(params: { pageId: string }): Promise<{ title: string; content: string; url: string }> {
-    // Fetch page metadata (title, url) and block content in parallel
-    const [metaResponse, blocksResponse] = await Promise.all([
+    const [metaResponse, markdownResponse] = await Promise.all([
       withRetry(() => fetch(`${BASE}/pages/${params.pageId}`, {
         method: 'GET',
         headers: this.headers,
       })),
-      withRetry(() => fetch(`${BASE}/blocks/${params.pageId}/children`, {
+      withRetry(() => fetch(`${BASE}/pages/${params.pageId}/markdown`, {
         method: 'GET',
         headers: this.headers,
       })),
     ]);
 
     if (!metaResponse.ok) throw new Error(`Notion readPage (meta) error: ${metaResponse.status}`);
-    if (!blocksResponse.ok) throw new Error(`Notion readPage (blocks) error: ${blocksResponse.status}`);
 
     const meta = await metaResponse.json() as {
       url?: string;
@@ -93,7 +94,6 @@ export class NotionConnector {
       title?: Array<{ plain_text: string }>;
     };
 
-    // Find the title property by type — works for both "title" and "Name" property names
     const titleProp = meta.properties
       ? Object.values(meta.properties).find((p) => p.type === 'title')
       : undefined;
@@ -102,19 +102,36 @@ export class NotionConnector {
       meta.title?.[0]?.plain_text ??
       'Untitled';
 
-    const blocksData = await blocksResponse.json() as { results: Array<Record<string, unknown>> };
-    const textBlocks = blocksData.results.map(block => {
-      const type = block.type as string;
-      const richText = (block[type] as Record<string, unknown>)?.rich_text;
-      if (Array.isArray(richText)) {
-        return richText.map((t: Record<string, unknown>) => t.plain_text as string).join('');
+    let content = '';
+    if (markdownResponse.ok) {
+      const md = await markdownResponse.json() as { markdown?: string };
+      content = (md.markdown ?? '').trim();
+    } else {
+      // Fallback: list child blocks for container pages
+      const blocksRes = await withRetry(() => fetch(`${BASE}/blocks/${params.pageId}/children`, {
+        method: 'GET',
+        headers: this.headers,
+      }));
+      if (blocksRes.ok) {
+        const blocksData = await blocksRes.json() as { results: Array<Record<string, unknown>> };
+        content = blocksData.results.map(block => {
+          const type = block.type as string;
+          if (type === 'child_page') {
+            const cp = block[type] as { title?: string };
+            return cp.title ? `[Subpage: ${cp.title}]` : '';
+          }
+          const richText = (block[type] as Record<string, unknown>)?.rich_text;
+          if (Array.isArray(richText)) {
+            return richText.map((t: Record<string, unknown>) => t.plain_text as string).join('');
+          }
+          return '';
+        }).filter(t => t.length > 0).join('\n\n');
       }
-      return '';
-    }).filter(t => t.length > 0);
+    }
 
     return {
       title,
-      content: textBlocks.join('\n\n'),
+      content,
       url: meta.url ?? `https://notion.so/${params.pageId.replace(/-/g, '')}`,
     };
   }
@@ -146,7 +163,7 @@ export class NotionConnector {
     pageId: string;
     title?: string;
     properties?: Record<string, unknown>;
-    archived?: boolean;
+    in_trash?: boolean;
   }): Promise<{ id: string; url: string }> {
     const properties: Record<string, unknown> = { ...params.properties };
     if (params.title) {
@@ -154,7 +171,7 @@ export class NotionConnector {
     }
     const body: Record<string, unknown> = {};
     if (Object.keys(properties).length > 0) body.properties = properties;
-    if (params.archived !== undefined) body.archived = params.archived;
+    if (params.in_trash !== undefined) body.in_trash = params.in_trash;
 
     const response = await withRetry(() => fetch(`${BASE}/pages/${params.pageId}`, {
       method: 'PATCH',

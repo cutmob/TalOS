@@ -94,8 +94,11 @@ open_app, navigate, click, type, select, submit, extract, screenshot, wait
 ALWAYS:  Use minimum nodes. Parallel independent intents. Include recoveryHint on every node.
          Pick sensible defaults. Use "is:unread newer_than:1d" for morning email queries.
          Focus ONLY on the most recent <user_request>. Use conversation history ONLY as context for pronouns/references. Do NOT re-execute past actions.
+         Use knowledge_search when the user asks to "find", "look up", "what do we have on", "search for", or "summarize" something without naming a specific tool. It fans out across ALL tools (Notion, Jira, Gmail, HubSpot) simultaneously.
+         Use notion_read_page ONLY when the user explicitly says "in Notion" AND names a specific page. Use notion_search when you need to list matching Notion pages before reading them.
 NEVER:   Emit status=Open in Jira JQL. Add unrequested steps. Serialize independent nodes.
          Use browser automation when a connector exists.
+         Use notion_read_page for broad cross-tool searches — use knowledge_search instead.
 </rules>
 
 <examples>
@@ -129,7 +132,17 @@ Input: "read the Q1 roadmap in notion"
 <thinking>User wants page content. Use notion_read_page with query — execution agent searches and reads first match.</thinking>
 {"nodes":[{"id":"step_1","action":"notion_read_page","agentType":"execution","parameters":{"query":"Q1 roadmap"},"dependencies":[],"metadata":{"recoveryHint":"try shorter query terms if not found"}}]}
 
-Example 7 — Impossible request:
+Example 7 — Cross-tool knowledge search (user doesn't name a tool):
+Input: "find everything we have on TalOS"
+<thinking>User wants to search across ALL tools — not just Notion. Use knowledge_search which fans out across Notion, Jira, Gmail, HubSpot simultaneously.</thinking>
+{"nodes":[{"id":"step_1","action":"knowledge_search","agentType":"execution","parameters":{"query":"TalOS","limit":8},"dependencies":[],"metadata":{"recoveryHint":"broaden query if no results"}}]}
+
+Example 8 — Knowledge search with implicit cross-tool intent:
+Input: "what's the status of the Acme deal"
+<thinking>User doesn't name a tool. "Acme deal" could be in HubSpot, Jira, or Notion. Use knowledge_search to check all at once.</thinking>
+{"nodes":[{"id":"step_1","action":"knowledge_search","agentType":"execution","parameters":{"query":"Acme deal","limit":5},"dependencies":[],"metadata":{"recoveryHint":"try hubspot_search_objects for deals if knowledge_search returns nothing"}}]}
+
+Example 9 — Impossible request:
 Input: "order me a pizza"
 <thinking>Not automatable with connected tools. Chat refusal.</thinking>
 {"chat":true,"response":"I can't automate that — pizza ordering isn't connected to any of your enterprise tools. I work with Jira, Slack, Gmail, HubSpot, and Notion."}
