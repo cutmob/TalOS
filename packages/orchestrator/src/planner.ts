@@ -195,7 +195,7 @@ P7.  CLARIFY vs DEFAULT — choose the right path:
      For multi-intent requests where one intent needs clarification: ask about the unclear
      part; do NOT execute the clear parts first and then fail.
 P8.  Write a meaningful "recoveryHint" for every node.
-P9.  Use agentType "execution" for standard connector actions, "research" for deep information gathering, and "recovery" ONLY for explicit recovery nodes.
+P9.  Use agentType "execution" for ALL connector actions (reads AND writes). Use "research" ONLY for knowledge_search, recall_memory, and get_context. Use "recovery" ONLY for explicit recovery nodes.
 P10. When a request mixes read + write intents, plan both — reads are parallel by default.
 P11. Focus ONLY on the most recent <user_request>. Use conversation history ONLY as context for pronouns/references. Do NOT re-execute past actions.
 P12. NEVER use a '#' prefix when referring to Slack channels in thoughts or clarification questions. Always use the plain, human-readable name (e.g., "the engineering channel" instead of "#engineering").
@@ -228,7 +228,7 @@ Input: "show me everything in progress"
 Single read intent: search Jira for in-progress work. status='In Progress' is the
 correct JQL value. No write side-effects. One node.
 </thinking>
-{"nodes":[{"id":"step_1","action":"jira_search","agentType":"research","parameters":{"jql":"project=${projectKey} AND status='In Progress' ORDER BY updated DESC"},"dependencies":[],"metadata":{"recoveryHint":"remove project filter if no results returned"}}]}
+{"nodes":[{"id":"step_1","action":"jira_search","agentType":"execution","parameters":{"jql":"project=${projectKey} AND status='In Progress' ORDER BY updated DESC"},"dependencies":[],"metadata":{"recoveryHint":"remove project filter if no results returned"}}]}
 
 ────────────────────────────────────────────────────────────────────────────────
 
@@ -248,7 +248,7 @@ Input: "do I have any emails this morning?"
 Single read intent: search Gmail for today's unread mail. "this morning" maps to
 "is:unread newer_than:1d". One node, no write side-effects.
 </thinking>
-{"nodes":[{"id":"step_1","action":"gmail_search","agentType":"research","parameters":{"query":"is:unread newer_than:1d","maxResults":20},"dependencies":[],"metadata":{"recoveryHint":"broaden query to newer_than:7d if no results returned"}}]}
+{"nodes":[{"id":"step_1","action":"gmail_search","agentType":"execution","parameters":{"query":"is:unread newer_than:1d","maxResults":20},"dependencies":[],"metadata":{"recoveryHint":"broaden query to newer_than:7d if no results returned"}}]}
 
 ────────────────────────────────────────────────────────────────────────────────
 
@@ -277,14 +277,14 @@ Input: "read the Q1 roadmap in notion" / "tell me what's in the onboarding guide
 <thinking>
 User wants page CONTENT — use notion_read_page with query. The execution agent searches and reads the first match automatically. Do NOT use notion_search here; that only returns titles.
 </thinking>
-{"nodes":[{"id":"step_1","action":"notion_read_page","agentType":"research","parameters":{"query":"Q1 roadmap"},"dependencies":[],"metadata":{"recoveryHint":"try shorter query terms if page not found"}}]}
+{"nodes":[{"id":"step_1","action":"notion_read_page","agentType":"execution","parameters":{"query":"Q1 roadmap"},"dependencies":[],"metadata":{"recoveryHint":"try shorter query terms if page not found"}}]}
 
 Example 7b — Notion find (title only, user just wants to locate a page):
 Input: "find the Q1 roadmap in notion"
 <thinking>
 User wants to locate / list matching pages — notion_search returns titles + IDs without fetching full content.
 </thinking>
-{"nodes":[{"id":"step_1","action":"notion_search","agentType":"research","parameters":{"query":"Q1 roadmap"},"dependencies":[],"metadata":{"recoveryHint":"try shorter query terms if no results"}}]}
+{"nodes":[{"id":"step_1","action":"notion_search","agentType":"execution","parameters":{"query":"Q1 roadmap"},"dependencies":[],"metadata":{"recoveryHint":"try shorter query terms if no results"}}]}
 
 ─── MULTI-INTENT PARALLEL ──────────────────────────────────────────────────────
 
@@ -297,7 +297,7 @@ Two independent read intents:
 Both intents are independent — they need no data from each other → parallel nodes,
 both dependencies: [].
 </thinking>
-{"nodes":[{"id":"step_1","action":"gmail_search","agentType":"research","parameters":{"query":"is:unread newer_than:1d","maxResults":20},"dependencies":[],"metadata":{"recoveryHint":"broaden query to newer_than:7d if no results"}},{"id":"step_2","action":"slack_read_messages","agentType":"research","parameters":{"channel":"engineering","limit":20},"dependencies":[],"metadata":{"recoveryHint":"use slack_list_channels first to verify channel name if not found"}}]}
+{"nodes":[{"id":"step_1","action":"gmail_search","agentType":"execution","parameters":{"query":"is:unread newer_than:1d","maxResults":20},"dependencies":[],"metadata":{"recoveryHint":"broaden query to newer_than:7d if no results"}},{"id":"step_2","action":"slack_read_messages","agentType":"execution","parameters":{"channel":"engineering","limit":20},"dependencies":[],"metadata":{"recoveryHint":"use slack_list_channels first to verify channel name if not found"}}]}
 
 ────────────────────────────────────────────────────────────────────────────────
 
@@ -309,7 +309,7 @@ Two independent read intents:
   2. Gmail: search emails from legal team
 Neither node needs the other's output → parallel, both dependencies: [].
 </thinking>
-{"nodes":[{"id":"step_1","action":"jira_search","agentType":"research","parameters":{"jql":"project=${projectKey} AND status IN ('To Do','In Progress') ORDER BY updated DESC"},"dependencies":[],"metadata":{"recoveryHint":"remove project filter if no results"}},{"id":"step_2","action":"gmail_search","agentType":"research","parameters":{"query":"from:legal is:unread","maxResults":10},"dependencies":[],"metadata":{"recoveryHint":"try from:@legal.com if no results from 'legal'"}}]}
+{"nodes":[{"id":"step_1","action":"jira_search","agentType":"execution","parameters":{"jql":"project=${projectKey} AND status IN ('To Do','In Progress') ORDER BY updated DESC"},"dependencies":[],"metadata":{"recoveryHint":"remove project filter if no results"}},{"id":"step_2","action":"gmail_search","agentType":"execution","parameters":{"query":"from:legal is:unread","maxResults":10},"dependencies":[],"metadata":{"recoveryHint":"try from:@legal.com if no results from 'legal'"}}]}
 
 ────────────────────────────────────────────────────────────────────────────────
 
@@ -321,7 +321,7 @@ Two independent read intents:
   2. Jira: search in-progress tickets
 Independent → parallel, both dependencies: [].
 </thinking>
-{"nodes":[{"id":"step_1","action":"hubspot_search_deals","agentType":"research","parameters":{"query":"open"},"dependencies":[],"metadata":{"recoveryHint":"try empty query string if no results"}},{"id":"step_2","action":"jira_search","agentType":"research","parameters":{"jql":"project=${projectKey} AND status='In Progress' ORDER BY updated DESC"},"dependencies":[],"metadata":{"recoveryHint":"remove project filter if no results"}}]}
+{"nodes":[{"id":"step_1","action":"hubspot_search_deals","agentType":"execution","parameters":{"query":"open"},"dependencies":[],"metadata":{"recoveryHint":"try empty query string if no results"}},{"id":"step_2","action":"jira_search","agentType":"execution","parameters":{"jql":"project=${projectKey} AND status='In Progress' ORDER BY updated DESC"},"dependencies":[],"metadata":{"recoveryHint":"remove project filter if no results"}}]}
 
 ─── CROSS-PLATFORM SEQUENTIAL ──────────────────────────────────────────────────
 
@@ -374,7 +374,7 @@ Input: "find the Acme contact in HubSpot and log them in our Notion CRM tracker"
 Two intents — SEQUENTIAL: must find the contact first before logging their details
 in Notion. step_2 depends on step_1's result to know who to log.
 </thinking>
-{"nodes":[{"id":"step_1","action":"hubspot_search_contacts","agentType":"research","parameters":{"query":"Acme"},"dependencies":[],"metadata":{"recoveryHint":"try company name only or email domain if no results"}},{"id":"step_2","action":"notion_append_block","agentType":"execution","parameters":{"blockId":"","content":"Acme contact synced from HubSpot CRM."},"dependencies":["step_1"],"metadata":{"recoveryHint":"use notion_create_page if the tracker page blockId is unknown"}}]}
+{"nodes":[{"id":"step_1","action":"hubspot_search_contacts","agentType":"execution","parameters":{"query":"Acme"},"dependencies":[],"metadata":{"recoveryHint":"try company name only or email domain if no results"}},{"id":"step_2","action":"notion_append_block","agentType":"execution","parameters":{"blockId":"","content":"Acme contact synced from HubSpot CRM."},"dependencies":["step_1"],"metadata":{"recoveryHint":"use notion_create_page if the tracker page blockId is unknown"}}]}
 
 ────────────────────────────────────────────────────────────────────────────────
 
@@ -384,7 +384,7 @@ Input: "check for emails from john@example.com and add him as a HubSpot contact"
 Two intents — these CAN run in parallel: the Gmail search and the contact creation
 do not depend on each other's output. Both start immediately.
 </thinking>
-{"nodes":[{"id":"step_1","action":"gmail_search","agentType":"research","parameters":{"query":"from:john@example.com","maxResults":10},"dependencies":[],"metadata":{"recoveryHint":"try from:@example.com to broaden scope"}},{"id":"step_2","action":"hubspot_create_contact","agentType":"execution","parameters":{"email":"john@example.com","firstName":"John"},"dependencies":[],"metadata":{"recoveryHint":"search for existing contact first if duplicate error occurs"}}]}
+{"nodes":[{"id":"step_1","action":"gmail_search","agentType":"execution","parameters":{"query":"from:john@example.com","maxResults":10},"dependencies":[],"metadata":{"recoveryHint":"try from:@example.com to broaden scope"}},{"id":"step_2","action":"hubspot_create_contact","agentType":"execution","parameters":{"email":"john@example.com","firstName":"John"},"dependencies":[],"metadata":{"recoveryHint":"search for existing contact first if duplicate error occurs"}}]}
 
 ────────────────────────────────────────────────────────────────────────────────
 
