@@ -1,20 +1,17 @@
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import type { TaskGraph, TaskNode } from '@talos/task-graph';
-import { TaskGraphBuilder } from '@talos/task-graph';
-import type { Agent } from '@talos/agent-runtime';
 import { AgentPool } from '@talos/agent-runtime';
 import type {
   OrchestratorConfig,
   OrchestratorRequest,
   OrchestratorResponse,
   TaskResult,
-  PlanningPrompt,
   ApprovalSettings,
   PendingApproval,
   ApprovalPreviewNode,
 } from './types.js';
 import { buildPlanningPrompt, buildSystemPrompt, parsePlanResponse, type PlanResult } from './planner.js';
-import { classifyAction, isWriteAction } from './action-classifier.js';
+import { classifyAction } from './action-classifier.js';
 
 /**
  * Central orchestrator that receives user requests, plans task graphs,
@@ -450,7 +447,7 @@ export class Orchestrator {
     this.pendingApprovals.delete(approvalId);
 
     const emit = onProgress ?? (() => {});
-    const { taskGraph, sessionId, request } = pending;
+    const { taskGraph, sessionId } = pending;
 
     this.activeTasks.set(sessionId, taskGraph);
     emit({ phase: 'executing', message: 'Approved — executing tasks...' });
@@ -638,6 +635,7 @@ export class Orchestrator {
    */
   private cleanSnippet(text: string, maxLen = 100): string {
     return text
+      // eslint-disable-next-line no-misleading-character-class
       .replace(/[\u034F\u200B\u200C\u200D\uFEFF\u00AD]+/g, '') // invisible chars & soft hyphens
       .replace(/<@[A-Z0-9]+>/g, '@user')                        // Slack user mentions <@U123>
       .replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1')                // Slack channel mentions <#C123|name>
@@ -782,6 +780,7 @@ export class Orchestrator {
         // For page content, preserve markdown formatting — just strip invisible chars
         // and truncate generously so the full summary comes through.
         const cleanContent = content
+          // eslint-disable-next-line no-misleading-character-class
           ? content.replace(/[\u034F\u200B\u200C\u200D\uFEFF\u00AD]+/g, '').replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, 3000)
           : '';
         if (!title && !cleanContent) {
@@ -1001,7 +1000,7 @@ export class Orchestrator {
    */
   private buildVoiceMessage(fullMessage: string): string {
     // Strip markdown: headings, bold/italic, bullets, code, links
-    let text = fullMessage
+    const text = fullMessage
       .replace(/^#{1,6}\s+/gm, '')
       .replace(/[*_`~]{1,3}([^*_`~\n]+)[*_`~]{1,3}/g, '$1')
       .replace(/^\s*[-*+]\s+/gm, '')

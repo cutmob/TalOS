@@ -1,4 +1,4 @@
-import type { MemoryEntry, MemoryStore, MemoryQuery, MemoryConfig, UISnapshot } from './types.js';
+import type { MemoryEntry, MemoryStore, MemoryConfig, UISnapshot } from './types.js';
 import { SemanticMemory } from './semantic.js';
 
 /**

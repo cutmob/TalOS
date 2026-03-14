@@ -313,7 +313,7 @@ export default function DashboardPage() {
   const [command, setCommand] = useState('');
   const [tasks, setTasks] = useState<TaskEntry[]>([]);
 
-  const [isVoiceConnected, setIsVoiceConnected] = useState(false);
+  const [_isVoiceConnected, setIsVoiceConnected] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [activeAgents, setActiveAgents] = useState<Set<string>>(new Set());
@@ -647,7 +647,6 @@ export default function DashboardPage() {
       // immediately after the stream closes and kills the dots before they flash.
       if (activeRef.current === 0 && !resultReceived) setActiveAgents(new Set());
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [command]);
 
   // ── PCM helpers ───────────────────────────────────────────────────────────
@@ -743,7 +742,7 @@ export default function DashboardPage() {
             ...prev,
           ]);
         }
-        if (msg.type === 'error') console.error('Voice error:', msg.message);
+        if (msg.type === 'error' && msg.message) console.error('Voice error:', msg.message);
       } catch { /* ignore */ }
     };
     return ws;

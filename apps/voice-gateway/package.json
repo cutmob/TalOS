@@ -8,7 +8,8 @@
     "dev": "tsx watch src/gateway.ts",
     "start": "node dist/gateway.js",
     "test": "vitest run --passWithNoTests",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "lint": "eslint src/"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.750.0",

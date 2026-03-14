@@ -25,16 +25,18 @@
     "dev:dashboard": "npm -w apps/dashboard run dev"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.4.0",
+    "tsx": "^4.19.0",
     "turbo": "^2.4.0",
     "typescript": "^5.7.0",
-    "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
-    "vitest": "^3.0.0",
-    "eslint": "^9.0.0",
-    "prettier": "^3.4.0"
+    "typescript-eslint": "^8.57.0",
+    "vitest": "^3.0.0"
   },
   "packageManager": "npm@10.8.2",
+  "type": "module",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   }
 }

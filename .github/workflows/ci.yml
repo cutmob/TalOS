@@ -26,5 +26,5 @@ jobs:
       - name: Run tests
         run: npx turbo test
 
-      - name: Type check
-        run: npx turbo build --dry-run=json > /dev/null
+      - name: Lint
+        run: npx turbo lint
