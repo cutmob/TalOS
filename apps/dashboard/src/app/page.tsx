@@ -341,6 +341,8 @@ export default function DashboardPage() {
   const activeRef = useRef(0);
   const taskHistoryRef = useRef<TaskEntry[]>([]);
   const pendingTaskIdRef = useRef<string | null>(null);
+  // Track when each agent dot was activated so we can enforce a minimum visible duration
+  const agentActivatedAtRef = useRef<Map<string, number>>(new Map());
   // Track transcript source to prevent voice textOutput from overwriting task result markdown
   const transcriptSourceRef = useRef<'voice' | 'result' | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
@@ -525,7 +527,9 @@ export default function DashboardPage() {
 
             } else if (phase === 'executing' && nodeId && agentType) {
               // Light up the correct agent dot, add a live step entry
-              setActiveAgents((prev) => new Set([...prev, 'orchestrator', visualAgent(action, agentType)]));
+              const agent = visualAgent(action, agentType);
+              agentActivatedAtRef.current.set(agent, Date.now());
+              setActiveAgents((prev) => new Set([...prev, 'orchestrator', agent]));
               updateTask({ progressLabel: labelAction(action, nodeId) });
               setTasks((prev) => prev.map((t) => {
                 if (t.id !== taskId) return t;
@@ -544,7 +548,15 @@ export default function DashboardPage() {
 
             } else if (phase === 'node_complete' && nodeId) {
               updatePendingStep(nodeId, { status: status === 'success' ? 'success' : 'failure' });
-              // Recompute active agents: keep orchestrator + any agents that still have running steps
+              const completedAgent = visualAgent(action, agentType);
+
+              // Enforce minimum 2s visibility so dots don't flash invisibly fast
+              const activatedAt = agentActivatedAtRef.current.get(completedAgent) ?? 0;
+              const elapsed = Date.now() - activatedAt;
+              const minVisible = 2000;
+              const remainingDelay = Math.max(minVisible - elapsed, 300);
+
+              // Recompute active agents: keep orchestrator + still-running agents + completed (for now)
               setActiveAgents(() => {
                 const current = taskHistoryRef.current.find((tt) => tt.id === taskId);
                 const stillRunning = (current?.pendingSteps ?? []).filter(
@@ -554,24 +566,22 @@ export default function DashboardPage() {
                 for (const s of stillRunning) {
                   next.add(visualAgent(s.action, s.agentType));
                 }
-                // Flash the just-completed agent briefly so the user sees it
-                const completedAgent = visualAgent(action, agentType);
                 next.add(completedAgent);
-                // Remove it after a short flash if nothing else needs it
-                setTimeout(() => {
-                  setActiveAgents((prev) => {
-                    const updated = new Set(prev);
-                    // Only remove if no other running step uses this agent
-                    const latest = taskHistoryRef.current.find((tt) => tt.id === taskId);
-                    const stillActive = (latest?.pendingSteps ?? []).some(
-                      (s) => s.status === 'running' && visualAgent(s.action, s.agentType) === completedAgent
-                    );
-                    if (!stillActive) updated.delete(completedAgent);
-                    return updated;
-                  });
-                }, 600);
                 return next;
               });
+
+              // Remove completed agent after remaining minimum-visibility delay
+              setTimeout(() => {
+                setActiveAgents((prev) => {
+                  const updated = new Set(prev);
+                  const latest = taskHistoryRef.current.find((tt) => tt.id === taskId);
+                  const stillActive = (latest?.pendingSteps ?? []).some(
+                    (s) => s.status === 'running' && visualAgent(s.action, s.agentType) === completedAgent
+                  );
+                  if (!stillActive) updated.delete(completedAgent);
+                  return updated;
+                });
+              }, remainingDelay);
             }
 
           } else if (evtType === 'result') {
@@ -598,16 +608,17 @@ export default function DashboardPage() {
               setPendingApproval(approval);
             }
 
-            // Use visualAgent(action, agentType) so reads → research, writes → execution,
-            // and recovery/research agents light up correctly from backend data.
-            const agentTypes = new Set<string>((result.results ?? []).map((r) => visualAgent(r.action as string | undefined, r.agentType as string | undefined)));
-            agentTypes.add('orchestrator');
-            if (agentTypes.size > 0) {
-              setActiveAgents(agentTypes);
-              setTimeout(() => setActiveAgents(new Set()), 1500);
-            } else {
-              setActiveAgents(new Set());
-            }
+            // Merge result agents into existing active set (don't overwrite progress state).
+            // Then fade out after a generous delay so users actually see what ran.
+            const resultAgents = (result.results ?? []).map((r) => visualAgent(r.action as string | undefined, r.agentType as string | undefined));
+            setActiveAgents((prev) => {
+              const merged = new Set(prev);
+              merged.add('orchestrator');
+              for (const a of resultAgents) merged.add(a);
+              return merged;
+            });
+            // Graceful fade-out: keep dots visible for 2.5s after completion
+            setTimeout(() => setActiveAgents(new Set()), 2500);
 
             if (isClarification || isPendingApproval) {
               pendingTaskIdRef.current = taskId;

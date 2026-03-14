@@ -67,6 +67,7 @@ export class ExecutionAgent extends BaseAgent {
         clientId: process.env.GMAIL_CLIENT_ID,
         clientSecret: process.env.GMAIL_CLIENT_SECRET,
         refreshToken: process.env.GMAIL_REFRESH_TOKEN,
+        fromEmail: process.env.GMAIL_FROM_EMAIL,
       });
     }
     if (process.env.HUBSPOT_API_KEY) {

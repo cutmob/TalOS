@@ -73,8 +73,12 @@ export async function taskRoutes(server: FastifyInstance) {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
       'Access-Control-Allow-Origin': '*',
     });
+
+    // Disable Node.js socket buffering so SSE events reach the client immediately
+    reply.raw.socket?.setNoDelay(true);
 
     const send = (event: string, data: unknown) => {
       reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);

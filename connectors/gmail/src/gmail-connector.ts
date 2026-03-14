@@ -22,9 +22,11 @@ const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 
 export class GmailConnector {
   private config: GmailConfig;
+  private cachedFromEmail: string | undefined;
 
   constructor(config: GmailConfig) {
     this.config = config;
+    this.cachedFromEmail = config.fromEmail;
   }
 
   // ── OAuth2 token refresh ──────────────────────────────────────────────────
@@ -48,17 +50,35 @@ export class GmailConnector {
     return { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
   }
 
+  private async getFromEmail(token: string): Promise<string> {
+    if (this.cachedFromEmail) return this.cachedFromEmail;
+    const res = await fetch(`${GMAIL_BASE}/profile`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      const profile = await res.json() as { emailAddress?: string };
+      if (profile.emailAddress) {
+        this.cachedFromEmail = profile.emailAddress;
+        return profile.emailAddress;
+      }
+    }
+    return 'me';
+  }
+
   // ── users.messages.send ───────────────────────────────────────────────────
   // Scope: gmail.send
   async sendEmail(draft: EmailDraft): Promise<{ messageId: string }> {
+    const token = await this.getAccessToken();
+    const from = await this.getFromEmail(token);
     const rawMessage = this.buildRaw({
+      from,
       to: draft.to.join(', '),
       subject: draft.subject,
       body: draft.body,
       cc: draft.cc,
       bcc: draft.bcc,
     });
-    const token = await this.getAccessToken();
 
     const response = await withRetry(() => fetch(`${GMAIL_BASE}/messages/send`, {
       method: 'POST',
@@ -67,7 +87,10 @@ export class GmailConnector {
       signal: AbortSignal.timeout(30_000),
     }));
 
-    if (!response.ok) throw new Error(`Gmail send error: ${response.status}`);
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '');
+      throw new Error(`Gmail send error: ${response.status} ${errBody}`);
+    }
     const data = await response.json() as { id: string };
     return { messageId: data.id };
   }
@@ -172,7 +195,10 @@ export class GmailConnector {
     const subject = params.subject.trimStart().toLowerCase().startsWith('re:')
       ? params.subject
       : `Re: ${params.subject}`;
+    const token = await this.getAccessToken();
+    const from = await this.getFromEmail(token);
     const raw = this.buildRaw({
+      from,
       to: params.to,
       subject,
       body: params.body,
@@ -182,14 +208,16 @@ export class GmailConnector {
         `References: ${params.inReplyToMessageId}`,
       ],
     });
-    const token = await this.getAccessToken();
     const response = await withRetry(() => fetch(`${GMAIL_BASE}/messages/send`, {
       method: 'POST',
       headers: this.authHeader(token),
       body: JSON.stringify({ raw, threadId: params.threadId }),
       signal: AbortSignal.timeout(30_000),
     }));
-    if (!response.ok) throw new Error(`Gmail reply error: ${response.status}`);
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '');
+      throw new Error(`Gmail reply error: ${response.status} ${errBody}`);
+    }
     const data = await response.json() as { id: string };
     return { messageId: data.id };
   }
@@ -218,6 +246,7 @@ export class GmailConnector {
   // ── helpers ───────────────────────────────────────────────────────────────
 
   private buildRaw(opts: {
+    from: string;
     to: string;
     subject: string;
     body: string;
@@ -226,6 +255,8 @@ export class GmailConnector {
     extraHeaders?: string[];
   }): string {
     const lines = [
+      'MIME-Version: 1.0',
+      `From: ${opts.from}`,
       `To: ${opts.to}`,
       `Subject: ${opts.subject}`,
       'Content-Type: text/plain; charset=utf-8',

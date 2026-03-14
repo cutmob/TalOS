@@ -49,13 +49,19 @@ export async function approvalRoutes(server: FastifyInstance) {
     const pending = server.orchestrator.getPendingApproval(approvalId);
     if (!pending) return reply.status(404).send({ error: 'Approval not found' });
 
+    // Tell Fastify we're taking over the response (prevents ERR_HTTP_HEADERS_SENT)
+    reply.hijack();
+
     // Stream the execution via SSE
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
       'Access-Control-Allow-Origin': '*',
     });
+
+    reply.raw.socket?.setNoDelay(true);
 
     const send = (event: string, data: unknown) => {
       reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);

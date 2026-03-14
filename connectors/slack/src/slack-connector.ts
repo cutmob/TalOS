@@ -35,7 +35,10 @@ export class SlackConnector {
       body: JSON.stringify({
         channel: message.channel,
         text: message.text,
+        ...(message.blocks && { blocks: message.blocks }),
         ...(message.threadTs && { thread_ts: message.threadTs }),
+        ...(message.unfurlLinks !== undefined && { unfurl_links: message.unfurlLinks }),
+        ...(message.unfurlMedia !== undefined && { unfurl_media: message.unfurlMedia }),
       }),
       signal: AbortSignal.timeout(30_000),
     }));

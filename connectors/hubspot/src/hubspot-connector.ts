@@ -45,6 +45,7 @@ export class HubSpotConnector {
           ...(contact.jobTitle && { jobtitle: contact.jobTitle }),
         },
       }),
+      signal: AbortSignal.timeout(30_000),
     }));
     if (!response.ok) throw new Error(`HubSpot createContact error: ${response.status}`);
     const data = await response.json() as { id: string };
@@ -61,6 +62,7 @@ export class HubSpotConnector {
         limit: 20,
         properties: ['email', 'firstname', 'lastname', 'company', 'phone', 'jobtitle'],
       }),
+      signal: AbortSignal.timeout(30_000),
     }));
     if (!response.ok) throw new Error(`HubSpot searchContacts error: ${response.status}`);
     const data = await response.json() as { results: Array<{ id: string; properties: Record<string, string> }> };
@@ -89,6 +91,7 @@ export class HubSpotConnector {
       method: 'PATCH',
       headers: this.headers,
       body: JSON.stringify({ properties: props }),
+      signal: AbortSignal.timeout(30_000),
     }));
     if (!response.ok) throw new Error(`HubSpot updateContact error: ${response.status}`);
     const data = await response.json() as { id: string };
@@ -124,6 +127,7 @@ export class HubSpotConnector {
           }],
         }),
       }),
+      signal: AbortSignal.timeout(30_000),
     }));
     if (!response.ok) throw new Error(`HubSpot createDeal error: ${response.status}`);
     const data = await response.json() as { id: string };
@@ -140,6 +144,7 @@ export class HubSpotConnector {
         limit: 20,
         properties: ['dealname', 'dealstage', 'amount', 'pipeline', 'closedate'],
       }),
+      signal: AbortSignal.timeout(30_000),
     }));
     if (!response.ok) throw new Error(`HubSpot searchDeals error: ${response.status}`);
     const data = await response.json() as { results: Array<{ id: string; properties: Record<string, string> }> };
@@ -163,6 +168,7 @@ export class HubSpotConnector {
           Object.entries(params.fields).map(([k, v]) => [k, String(v)])
         ),
       }),
+      signal: AbortSignal.timeout(30_000),
     }));
     if (!response.ok) throw new Error(`HubSpot updateDeal error: ${response.status}`);
     const data = await response.json() as { id: string };
@@ -200,6 +206,7 @@ export class HubSpotConnector {
         },
         ...(associations.length > 0 && { associations }),
       }),
+      signal: AbortSignal.timeout(30_000),
     }));
     if (!response.ok) throw new Error(`HubSpot logActivity error: ${response.status}`);
     const data = await response.json() as { id: string };
@@ -208,14 +215,6 @@ export class HubSpotConnector {
 
   // ── Metadata / schema helpers ─────────────────────────────────────────────
 
-  /**
-   * List CRM v3 properties for a given object type, following the official
-   * HubSpot CRM objects & properties API.
-   *
-   * Docs:
-   *   - Contacts: GET /crm/v3/properties/contacts
-   *   - Deals:    GET /crm/v3/properties/deals
-   */
   async listProperties(objectType: 'contacts' | 'deals'): Promise<Array<{
     name: string;
     label: string;
@@ -226,9 +225,10 @@ export class HubSpotConnector {
     const response = await withRetry(() => fetch(`${BASE}/crm/v3/properties/${objectType}`, {
       method: 'GET',
       headers: this.headers,
+      signal: AbortSignal.timeout(30_000),
     }));
     if (!response.ok) throw new Error(`HubSpot listProperties error: ${response.status}`);
-    const data = await response.json() as { results: Array<any> };
+    const data = await response.json() as { results: Array<{ name: string; label: string; description?: string; type: string; fieldType: string }> };
     return data.results.map((p) => ({
       name: p.name,
       label: p.label,
@@ -238,12 +238,6 @@ export class HubSpotConnector {
     }));
   }
 
-  /**
-   * Generic HubSpot CRM v3 object search helper.
-   *
-   * This intentionally mirrors the official CRM v3 "Search" endpoints:
-   *   POST /crm/v3/objects/{objectType}/search
-   */
   async searchObjects(params: {
     objectType: 'contacts' | 'deals';
     query: string;
@@ -259,6 +253,7 @@ export class HubSpotConnector {
         limit,
         ...(properties && properties.length > 0 ? { properties } : {}),
       }),
+      signal: AbortSignal.timeout(30_000),
     }));
     if (!response.ok) throw new Error(`HubSpot searchObjects error: ${response.status}`);
     const data = await response.json() as { results: Array<{ id: string; properties: Record<string, unknown> }> };

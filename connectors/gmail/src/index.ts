@@ -4,6 +4,7 @@ export interface GmailConfig {
   clientId: string;
   clientSecret: string;
   refreshToken: string;
+  fromEmail?: string;
 }
 
 export interface EmailDraft {
