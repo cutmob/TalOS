@@ -102,6 +102,30 @@ interface TaskEntry {
   pendingSteps?: PendingStep[];
 }
 
+interface ApprovalPreviewNode {
+  nodeId: string;
+  action: string;
+  category: 'read' | 'write';
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+interface PendingApprovalData {
+  approvalId: string;
+  sessionId: string;
+  writeActions: ApprovalPreviewNode[];
+  readActions: ApprovalPreviewNode[];
+  originalInput: string;
+  createdAt: number;
+}
+
+type AutonomyLevel = 'full' | 'write_approval' | 'all_approval';
+
+interface ApprovalSettings {
+  defaultLevel: AutonomyLevel;
+  connectorOverrides: Partial<Record<string, AutonomyLevel>>;
+}
+
 interface Metrics {
   totalTasks: number;
   successCount: number;
@@ -300,6 +324,10 @@ export default function DashboardPage() {
   const [greeting, setGreeting] = useState<Pair>(['', '']);
   const [miniMode, setMiniMode] = useState(false);
   const [lightMode, setLightMode] = useState(false);
+  const [pendingApproval, setPendingApproval] = useState<PendingApprovalData | null>(null);
+  const [approvalSettings, setApprovalSettings] = useState<ApprovalSettings>({ defaultLevel: 'write_approval', connectorOverrides: {} });
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [approvalLoading, setApprovalLoading] = useState(false);
   useEffect(() => { setGreeting(pickGreeting()); }, []);
 
   // Stable session ID for the entire browser session — persists across tasks
@@ -313,6 +341,9 @@ export default function DashboardPage() {
   const activeRef = useRef(0);
   const taskHistoryRef = useRef<TaskEntry[]>([]);
   const pendingTaskIdRef = useRef<string | null>(null);
+  // Track transcript source to prevent voice textOutput from overwriting task result markdown
+  const transcriptSourceRef = useRef<'voice' | 'result' | null>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Poll /api/metrics every 5s
   useEffect(() => {
@@ -327,8 +358,26 @@ export default function DashboardPage() {
     return () => clearInterval(id);
   }, []);
 
+  // Load autonomy settings on mount
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const apiBase = process.env.NEXT_PUBLIC_API_SERVER_URL ?? '';
+        const res = await fetch(`${apiBase}/api/approvals/settings`);
+        if (res.ok) setApprovalSettings(await res.json());
+      } catch { /* api may not be up yet */ }
+    };
+    load();
+  }, []);
+
   // Keep history ref in sync (tasks array is the source of truth)
   useEffect(() => { taskHistoryRef.current = tasks; }, [tasks]);
+
+  // Auto-scroll transcript to bottom when content changes
+  useEffect(() => {
+    const el = transcriptScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [transcript]);
 
   // Timeout stuck running tasks after 60s
   useEffect(() => {
@@ -531,13 +580,23 @@ export default function DashboardPage() {
               status?: string;
               message?: string;
               results?: TaskResult[];
+              approval?: PendingApprovalData;
             };
             const duration = Date.now() - startedAt;
             const isClarification = result.status === 'clarification';
-            const ok = isClarification || (result.results?.every((r) => r.status === 'success') ?? result.status === 'completed');
+            const isPendingApproval = result.status === 'pending_approval';
+            const ok = isClarification || isPendingApproval || (result.results?.every((r) => r.status === 'success') ?? result.status === 'completed');
             const summary = result.message ?? (ok ? 'Done.' : 'Some tasks failed.');
 
+            transcriptSourceRef.current = 'result';
             setTranscript(summary);
+            setTimeout(() => { transcriptSourceRef.current = null; }, 5000);
+
+            // Approval gate — store pending approval for the approval card
+            if (isPendingApproval && result.approval) {
+              const approval = result.approval as PendingApprovalData;
+              setPendingApproval(approval);
+            }
 
             // Use visualAgent(action, agentType) so reads → research, writes → execution,
             // and recovery/research agents light up correctly from backend data.
@@ -550,20 +609,20 @@ export default function DashboardPage() {
               setActiveAgents(new Set());
             }
 
-            if (isClarification) {
+            if (isClarification || isPendingApproval) {
               pendingTaskIdRef.current = taskId;
             } else {
               pendingTaskIdRef.current = null;
             }
 
             const patch: Partial<TaskEntry> = {
-              status: isClarification ? 'running' : ok ? 'completed' : 'failed',
-              completedAt: isClarification ? undefined : Date.now(),
-              duration: isClarification ? undefined : duration,
+              status: (isClarification || isPendingApproval) ? 'running' : ok ? 'completed' : 'failed',
+              completedAt: (isClarification || isPendingApproval) ? undefined : Date.now(),
+              duration: (isClarification || isPendingApproval) ? undefined : duration,
               results: result.results,
               message: summary,
             };
-            if (!isClarification) patch.pendingSteps = undefined;
+            if (!isClarification && !isPendingApproval) patch.pendingSteps = undefined;
             updateTask(patch);
 
           } else if (evtType === 'error') {
@@ -633,8 +692,13 @@ export default function DashboardPage() {
         if (msg.type === 'ready') { setIsVoiceConnected(true); setMicState('listening'); }
         // Nova Sonic speaking — play PCM audio
         if (msg.type === 'audio' && msg.audio) playPCM24k(msg.audio as string);
-        // Live transcript of what Nova Sonic understood
-        if (msg.type === 'transcript' && msg.text) setTranscript(msg.text as string);
+        // Live transcript of what Nova Sonic understood — don't overwrite task result markdown
+        if (msg.type === 'transcript' && msg.text) {
+          if (transcriptSourceRef.current !== 'result') {
+            transcriptSourceRef.current = 'voice';
+            setTranscript(msg.text as string);
+          }
+        }
         // Nova Sonic executed a command via tool use — show it in task feed
         if (msg.type === 'task_result') {
           const result = msg.result as {
@@ -643,7 +707,12 @@ export default function DashboardPage() {
             results?: TaskResult[];
           };
 
-          if (result?.message) setTranscript(result.message);
+          if (result?.message) {
+            transcriptSourceRef.current = 'result';
+            setTranscript(result.message);
+            // Allow voice transcript updates again after 5s (next turn)
+            setTimeout(() => { transcriptSourceRef.current = null; }, 5000);
+          }
 
           // Light up agent status dots based on which agents actually ran
           if (result?.results && result.results.length > 0) {
@@ -724,9 +793,102 @@ export default function DashboardPage() {
     setIsVoiceConnected(false);
     setMicState('idle');
     setTranscript('');
+    transcriptSourceRef.current = null;
     sonicCtxRef.current?.close();
     sonicCtxRef.current = null;
     nextPlayTimeRef.current = 0;
+  }, []);
+
+  // ── Approval actions ─────────────────────────────────────────────────────
+
+  const handleApprove = useCallback(async () => {
+    if (!pendingApproval) return;
+    setApprovalLoading(true);
+    try {
+      const apiBase = process.env.NEXT_PUBLIC_API_SERVER_URL ?? '';
+      const res = await fetch(`${apiBase}/api/approvals/${pendingApproval.approvalId}/approve`, { method: 'POST' });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+      // Parse SSE stream from approval execution
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() ?? '';
+        for (const rawEvent of events) {
+          let evtType = '';
+          let evtData = '';
+          for (const line of rawEvent.split('\n')) {
+            if (line.startsWith('event: ')) evtType = line.slice(7).trim();
+            else if (line.startsWith('data: ')) evtData = line.slice(6).trim();
+          }
+          if (!evtType || !evtData) continue;
+          try {
+            const data = JSON.parse(evtData);
+            if (evtType === 'result') {
+              transcriptSourceRef.current = 'result';
+              setTranscript(data.message ?? 'Done.');
+              setTimeout(() => { transcriptSourceRef.current = null; }, 5000);
+              // Update the task entry
+              const taskId = pendingTaskIdRef.current;
+              if (taskId) {
+                setTasks((prev) => prev.map((t) => t.id === taskId ? {
+                  ...t,
+                  status: data.results?.every((r: TaskResult) => r.status === 'success') ? 'completed' : 'failed',
+                  completedAt: Date.now(),
+                  duration: Date.now() - t.startedAt,
+                  results: data.results,
+                  message: data.message,
+                  pendingSteps: undefined,
+                } : t));
+                pendingTaskIdRef.current = null;
+              }
+            }
+          } catch { /* skip malformed */ }
+        }
+      }
+    } catch (err) {
+      setTranscript(`Approval failed: ${err}`);
+    } finally {
+      setPendingApproval(null);
+      setApprovalLoading(false);
+    }
+  }, [pendingApproval]);
+
+  const handleReject = useCallback(async () => {
+    if (!pendingApproval) return;
+    setApprovalLoading(true);
+    try {
+      const apiBase = process.env.NEXT_PUBLIC_API_SERVER_URL ?? '';
+      await fetch(`${apiBase}/api/approvals/${pendingApproval.approvalId}/reject`, { method: 'POST' });
+      transcriptSourceRef.current = 'result';
+      setTranscript('Action cancelled — no changes were made.');
+      setTimeout(() => { transcriptSourceRef.current = null; }, 5000);
+      const taskId = pendingTaskIdRef.current;
+      if (taskId) {
+        setTasks((prev) => prev.map((t) => t.id === taskId ? {
+          ...t, status: 'failed', completedAt: Date.now(), duration: Date.now() - t.startedAt, message: 'Rejected by user',
+        } : t));
+        pendingTaskIdRef.current = null;
+      }
+    } finally {
+      setPendingApproval(null);
+      setApprovalLoading(false);
+    }
+  }, [pendingApproval]);
+
+  const updateAutonomySetting = useCallback(async (patch: Partial<ApprovalSettings>) => {
+    const apiBase = process.env.NEXT_PUBLIC_API_SERVER_URL ?? '';
+    const res = await fetch(`${apiBase}/api/approvals/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (res.ok) setApprovalSettings(await res.json());
   }, []);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1243,14 +1405,18 @@ export default function DashboardPage() {
 
         {/* Live transcript — rendered as markdown, scrollable for long responses */}
         {transcript ? (
-          <div style={{
-            fontSize: '1rem', fontWeight: 300, color: t.transcriptText,
-            letterSpacing: '-0.01em', lineHeight: 1.6,
-            maxWidth: 560, width: '100%',
-            maxHeight: '40vh', overflowY: 'auto',
-            padding: '0.5rem 0.75rem',
-            scrollbarWidth: 'none',
-          }} className="md-scroll">
+          <div
+            ref={transcriptScrollRef}
+            style={{
+              fontSize: '1rem', fontWeight: 300, color: t.transcriptText,
+              letterSpacing: '-0.01em', lineHeight: 1.6,
+              maxWidth: 560, width: '100%',
+              maxHeight: '40vh', overflowY: 'auto',
+              padding: '0.5rem 0.75rem',
+              scrollbarWidth: 'thin',
+              scrollbarColor: `${t.border1} transparent`,
+              transition: 'opacity 0.2s ease',
+            }} className="md-scroll">
             <ReactMarkdown
               components={{
                 p: ({ children }) => <p style={{ margin: '0.25rem 0' }}>{children}</p>,
@@ -1269,6 +1435,66 @@ export default function DashboardPage() {
           </div>
         ) : (
           <p style={{ minHeight: '1.5rem', margin: 0 }} />
+        )}
+
+        {/* ── Approval card ─────────────────────────────────────────────── */}
+        {pendingApproval && (
+          <div style={{
+            maxWidth: 520, width: '100%',
+            background: lightMode ? 'rgba(255,255,255,0.85)' : 'rgba(30,30,30,0.85)',
+            backdropFilter: 'blur(12px)',
+            border: `1px solid ${lightMode ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.08)'}`,
+            borderRadius: 12, padding: '1rem 1.25rem',
+            animation: 'slideUp 0.3s ease',
+          }}>
+            <div style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#f59e0b', marginBottom: '0.5rem' }}>
+              Approval Required
+            </div>
+            <div style={{ fontSize: '0.85rem', color: t.text2, lineHeight: 1.5, marginBottom: '0.75rem' }}>
+              <ReactMarkdown components={{
+                p: ({ children }) => <p style={{ margin: '0.2rem 0' }}>{children}</p>,
+                strong: ({ children }) => <strong style={{ color: t.mdStrong, fontWeight: 500 }}>{children}</strong>,
+                ul: ({ children }) => <ul style={{ textAlign: 'left', paddingLeft: '1.2rem', margin: '0.2rem 0' }}>{children}</ul>,
+                li: ({ children }) => <li style={{ margin: '0.1rem 0' }}>{children}</li>,
+                code: ({ children }) => <code style={{ background: t.mdCode, color: t.mdCodeText, padding: '0.1rem 0.3rem', borderRadius: 3, fontSize: '0.8rem' }}>{children}</code>,
+              }}>
+                {pendingApproval.writeActions.map((w) => `- **${w.action.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}**: ${w.description}`).join('\n')}
+              </ReactMarkdown>
+              {pendingApproval.readActions.length > 0 && (
+                <p style={{ margin: '0.4rem 0 0', fontSize: '0.78rem', color: t.text3 }}>
+                  Also planned (auto-approved): {pendingApproval.readActions.map((r) => r.action.replace(/_/g, ' ')).join(', ')}
+                </p>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button
+                onClick={handleReject}
+                disabled={approvalLoading}
+                style={{
+                  padding: '0.4rem 1rem', borderRadius: 6,
+                  border: `1px solid ${lightMode ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.12)'}`,
+                  background: 'transparent', color: t.text2,
+                  fontSize: '0.8rem', fontWeight: 500, cursor: 'pointer',
+                  opacity: approvalLoading ? 0.5 : 1,
+                }}
+              >
+                Reject
+              </button>
+              <button
+                onClick={handleApprove}
+                disabled={approvalLoading}
+                style={{
+                  padding: '0.4rem 1rem', borderRadius: 6,
+                  border: 'none',
+                  background: '#6366f1', color: '#fff',
+                  fontSize: '0.8rem', fontWeight: 500, cursor: 'pointer',
+                  opacity: approvalLoading ? 0.5 : 1,
+                }}
+              >
+                {approvalLoading ? 'Executing...' : 'Approve'}
+              </button>
+            </div>
+          </div>
         )}
 
         {/* Type instead input */}
@@ -1552,6 +1778,94 @@ export default function DashboardPage() {
             <polyline points="18 15 12 9 6 15" />
           </svg>
         </button>
+      )}
+
+      {/* ── Settings gear (bottom right) ── */}
+      {!miniMode && (
+        <button
+          onClick={() => setSettingsPanelOpen((v) => !v)}
+          aria-label="Autonomy settings"
+          style={{
+            position: 'fixed', bottom: 16, right: 20,
+            zIndex: 20, background: 'transparent', border: 'none',
+            color: t.text3, cursor: 'pointer', padding: 6,
+            outline: 'none', opacity: 0.6, transition: 'opacity 0.2s',
+          }}
+          onMouseEnter={(e) => { (e.target as HTMLElement).style.opacity = '1'; }}
+          onMouseLeave={(e) => { (e.target as HTMLElement).style.opacity = '0.6'; }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+      )}
+
+      {/* ── Autonomy settings panel ── */}
+      {settingsPanelOpen && !miniMode && (
+        <div style={{
+          position: 'fixed', bottom: 40, right: 20,
+          zIndex: 25, width: 300,
+          background: lightMode ? 'rgba(255,255,255,0.95)' : 'rgba(24,24,24,0.95)',
+          backdropFilter: 'blur(16px)',
+          border: `1px solid ${lightMode ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.08)'}`,
+          borderRadius: 12, padding: '1rem 1.25rem',
+          animation: 'slideUp 0.2s ease-out',
+        }}>
+          <p style={{ fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: t.text3, margin: '0 0 0.75rem' }}>
+            Autonomy Settings
+          </p>
+
+          {/* Global default */}
+          <div style={{ marginBottom: '0.75rem' }}>
+            <label style={{ fontSize: '0.78rem', color: t.text2, display: 'block', marginBottom: '0.3rem' }}>Default Level</label>
+            <select
+              value={approvalSettings.defaultLevel}
+              onChange={(e) => updateAutonomySetting({ defaultLevel: e.target.value as AutonomyLevel })}
+              style={{
+                width: '100%', padding: '0.35rem 0.5rem', borderRadius: 6,
+                border: `1px solid ${lightMode ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.12)'}`,
+                background: lightMode ? '#fff' : 'rgba(40,40,40,0.8)', color: t.text1,
+                fontSize: '0.78rem', outline: 'none',
+              }}
+            >
+              <option value="write_approval">Approve writes (recommended)</option>
+              <option value="all_approval">Approve everything</option>
+              <option value="full">Full autonomy</option>
+            </select>
+          </div>
+
+          {/* Per-connector overrides */}
+          <p style={{ fontSize: '0.68rem', fontWeight: 500, color: t.text3, margin: '0.5rem 0 0.4rem', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            Per-connector overrides
+          </p>
+          {(['slack', 'gmail', 'jira', 'hubspot', 'notion'] as const).map((connector) => (
+            <div key={connector} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.3rem' }}>
+              <span style={{ fontSize: '0.75rem', color: t.text2, textTransform: 'capitalize' }}>{connector}</span>
+              <select
+                value={approvalSettings.connectorOverrides[connector] ?? ''}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const overrides = { ...approvalSettings.connectorOverrides };
+                  if (val === '') { delete overrides[connector]; } else { overrides[connector] = val as AutonomyLevel; }
+                  updateAutonomySetting({ connectorOverrides: overrides });
+                }}
+                style={{
+                  padding: '0.2rem 0.4rem', borderRadius: 4,
+                  border: `1px solid ${lightMode ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.08)'}`,
+                  background: lightMode ? '#fff' : 'rgba(40,40,40,0.8)', color: t.text2,
+                  fontSize: '0.72rem', outline: 'none',
+                }}
+              >
+                <option value="">(use default)</option>
+                <option value="write_approval">Approve writes</option>
+                <option value="all_approval">Approve all</option>
+                <option value="full">Full autonomy</option>
+              </select>
+            </div>
+          ))}
+        </div>
       )}
 
       {/* ── Full task panel (slide up) ── */}

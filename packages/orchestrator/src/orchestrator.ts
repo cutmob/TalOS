@@ -9,8 +9,12 @@ import type {
   OrchestratorResponse,
   TaskResult,
   PlanningPrompt,
+  ApprovalSettings,
+  PendingApproval,
+  ApprovalPreviewNode,
 } from './types.js';
 import { buildPlanningPrompt, buildSystemPrompt, parsePlanResponse, type PlanResult } from './planner.js';
+import { classifyAction, isWriteAction } from './action-classifier.js';
 
 /**
  * Central orchestrator that receives user requests, plans task graphs,
@@ -31,6 +35,11 @@ export class Orchestrator {
   private activeTasks: Map<string, TaskGraph> = new Map();
   private sessionHistory: Map<string, Array<{ userInput: string; assistantOutput: string }>> = new Map();
   private pendingPrompts: Map<string, string> = new Map();
+  private pendingApprovals: Map<string, PendingApproval> = new Map();
+  private approvalSettings: ApprovalSettings = {
+    defaultLevel: 'write_approval',
+    connectorOverrides: {},
+  };
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -100,6 +109,24 @@ export class Orchestrator {
     const taskGraph = planResult.taskGraph!;
     this.activeTasks.set(request.sessionId, taskGraph);
     emit({ phase: 'planning', message: `Planned ${taskGraph.nodes.length} task${taskGraph.nodes.length === 1 ? '' : 's'}` });
+
+    // Phase 1.5: Approval gate — check if any write actions need human approval
+    const approvalCheck = this.checkApprovalRequired(taskGraph, request);
+    if (approvalCheck) {
+      this.pendingApprovals.set(approvalCheck.approvalId, approvalCheck);
+      const previewMessage = this.buildApprovalPreview(approvalCheck);
+      emit({ phase: 'pending_approval', message: previewMessage });
+      this.appendHistory(request.sessionId, request.input, previewMessage);
+      return {
+        sessionId: request.sessionId,
+        taskGraph,
+        status: 'pending_approval',
+        results: [],
+        message: previewMessage,
+        voiceMessage: this.buildVoiceMessage(previewMessage),
+        approval: approvalCheck,
+      };
+    }
 
     // Phase 2: Execute — delegate tasks to specialist agents
     const results = await this.execute(taskGraph, request.sessionId, emit);
@@ -385,6 +412,224 @@ export class Orchestrator {
 
   getActiveTaskCount(): number {
     return this.activeTasks.size;
+  }
+
+  // ── Approval gate ──────────────────────────────────────────────────────────
+
+  getApprovalSettings(): ApprovalSettings {
+    return { ...this.approvalSettings };
+  }
+
+  updateApprovalSettings(settings: Partial<ApprovalSettings>): ApprovalSettings {
+    if (settings.defaultLevel) this.approvalSettings.defaultLevel = settings.defaultLevel;
+    if (settings.connectorOverrides) {
+      this.approvalSettings.connectorOverrides = {
+        ...this.approvalSettings.connectorOverrides,
+        ...settings.connectorOverrides,
+      };
+    }
+    return this.getApprovalSettings();
+  }
+
+  getPendingApprovals(): PendingApproval[] {
+    return [...this.pendingApprovals.values()];
+  }
+
+  getPendingApproval(approvalId: string): PendingApproval | undefined {
+    return this.pendingApprovals.get(approvalId);
+  }
+
+  /**
+   * Approve a pending task graph — execute it.
+   */
+  async approveTask(approvalId: string, onProgress?: (e: import('./types.js').ProgressEvent) => void): Promise<OrchestratorResponse> {
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending) {
+      throw new Error(`No pending approval found: ${approvalId}`);
+    }
+    this.pendingApprovals.delete(approvalId);
+
+    const emit = onProgress ?? (() => {});
+    const { taskGraph, sessionId, request } = pending;
+
+    this.activeTasks.set(sessionId, taskGraph);
+    emit({ phase: 'executing', message: 'Approved — executing tasks...' });
+
+    const results = await this.execute(taskGraph, sessionId, emit);
+    this.activeTasks.delete(sessionId);
+
+    const allSucceeded = results.every((r) => r.status === 'success');
+    const summaryMessage = this.buildSummaryMessage(results, allSucceeded);
+    const voiceMessage = this.buildVoiceMessage(summaryMessage);
+
+    emit({ phase: allSucceeded ? 'completed' : 'failed', message: summaryMessage });
+    this.appendHistory(sessionId, pending.originalInput, summaryMessage);
+
+    return {
+      sessionId,
+      taskGraph,
+      status: allSucceeded ? 'completed' : 'failed',
+      results,
+      message: summaryMessage,
+      voiceMessage,
+    };
+  }
+
+  /**
+   * Reject a pending task graph — discard it.
+   */
+  rejectTask(approvalId: string): OrchestratorResponse {
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending) {
+      throw new Error(`No pending approval found: ${approvalId}`);
+    }
+    this.pendingApprovals.delete(approvalId);
+
+    const message = 'Action cancelled — no changes were made.';
+    this.appendHistory(pending.sessionId, pending.originalInput, message);
+
+    return {
+      sessionId: pending.sessionId,
+      taskGraph: pending.taskGraph,
+      status: 'completed',
+      results: [],
+      message,
+      voiceMessage: message,
+    };
+  }
+
+  /**
+   * Check if any nodes in the task graph require approval based on current autonomy settings.
+   * Returns a PendingApproval if approval is needed, or null if execution can proceed.
+   */
+  private checkApprovalRequired(taskGraph: TaskGraph, request: OrchestratorRequest): PendingApproval | null {
+    const writeNodes: ApprovalPreviewNode[] = [];
+    const readNodes: ApprovalPreviewNode[] = [];
+
+    for (const node of taskGraph.nodes) {
+      const category = classifyAction(node.action);
+      const preview: ApprovalPreviewNode = {
+        nodeId: node.id,
+        action: node.action,
+        category,
+        description: this.describeAction(node),
+        parameters: node.parameters,
+      };
+
+      if (category === 'write') writeNodes.push(preview);
+      else readNodes.push(preview);
+    }
+
+    // No write actions → no approval needed regardless of settings
+    if (writeNodes.length === 0 && this.approvalSettings.defaultLevel !== 'all_approval') {
+      return null;
+    }
+
+    // Check if approval is required for any of the actions
+    const needsApproval = this.approvalSettings.defaultLevel === 'all_approval'
+      || (this.approvalSettings.defaultLevel === 'write_approval' && writeNodes.length > 0)
+      || writeNodes.some((w) => {
+        const connector = this.actionToConnector(w.action);
+        const override = connector ? this.approvalSettings.connectorOverrides[connector] : undefined;
+        const level = override ?? this.approvalSettings.defaultLevel;
+        return level === 'write_approval' || level === 'all_approval';
+      });
+
+    // Full autonomy and no per-connector overrides require approval → skip
+    if (!needsApproval) return null;
+
+    return {
+      approvalId: `approval_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      sessionId: request.sessionId,
+      userId: request.userId,
+      createdAt: Date.now(),
+      taskGraph,
+      writeActions: writeNodes,
+      readActions: readNodes,
+      originalInput: request.input,
+      request,
+    };
+  }
+
+  /**
+   * Build a human-readable preview of what actions are pending approval.
+   */
+  private buildApprovalPreview(pending: PendingApproval): string {
+    const lines: string[] = ['**Approval required** — the following actions need your confirmation:\n'];
+
+    for (const w of pending.writeActions) {
+      lines.push(`- **${this.formatActionName(w.action)}**: ${w.description}`);
+    }
+
+    if (pending.readActions.length > 0) {
+      lines.push(`\n_Also planned (auto-approved):_ ${pending.readActions.map((r) => this.formatActionName(r.action)).join(', ')}`);
+    }
+
+    lines.push(`\nApproval ID: \`${pending.approvalId}\``);
+    return lines.join('\n');
+  }
+
+  /**
+   * Generate a human-readable description of what a task node will do.
+   */
+  private describeAction(node: TaskNode): string {
+    const p = node.parameters;
+    switch (node.action) {
+      case 'gmail_send_email':
+        return `Send email to ${(p.to as string[])?.join(', ') ?? 'recipient'}${p.subject ? ` — "${p.subject}"` : ''}`;
+      case 'gmail_reply':
+        return `Reply to email thread${p.subject ? ` "${p.subject}"` : ''}`;
+      case 'gmail_modify_labels':
+        return `Modify labels on ${(p.messageIds as string[])?.length ?? 0} email(s)`;
+      case 'slack_send_message':
+        return `Send message to #${p.channel ?? 'channel'}${p.text ? `: "${(p.text as string).slice(0, 60)}${(p.text as string).length > 60 ? '…' : ''}"` : ''}`;
+      case 'slack_send_dm':
+        return `Send DM to user ${p.userId ?? 'unknown'}`;
+      case 'slack_reply_in_thread':
+        return `Reply in thread in #${p.channel ?? 'channel'}`;
+      case 'slack_add_reaction':
+        return `Add :${p.emoji ?? 'emoji'}: reaction`;
+      case 'slack_upload_file':
+        return `Upload file "${p.filename ?? 'file'}" to #${p.channel ?? 'channel'}`;
+      case 'jira_create_ticket':
+        return `Create Jira ticket${p.summary ? `: "${p.summary}"` : ''}${p.priority ? ` [${p.priority}]` : ''}`;
+      case 'jira_update_ticket':
+        return `Update Jira ticket${p.key ? ` ${p.key}` : ''}`;
+      case 'hubspot_create_contact':
+        return `Create HubSpot contact${p.firstName || p.lastName ? `: ${[p.firstName, p.lastName].filter(Boolean).join(' ')}` : ''}`;
+      case 'hubspot_update_contact':
+        return `Update HubSpot contact`;
+      case 'hubspot_create_deal':
+        return `Create HubSpot deal${p.name ? `: "${p.name}"` : ''}`;
+      case 'hubspot_update_deal':
+        return `Update HubSpot deal`;
+      case 'hubspot_log_activity':
+        return `Log activity in HubSpot`;
+      case 'notion_create_page':
+        return `Create Notion page${p.title ? `: "${p.title}"` : ''}`;
+      case 'notion_update_page':
+        return `Update Notion page`;
+      case 'notion_append_block':
+        return `Append content to Notion page`;
+      default:
+        return `Execute ${this.formatActionName(node.action)}`;
+    }
+  }
+
+  /** Map an action string to its connector name for autonomy override lookup. */
+  private actionToConnector(action: string): 'jira' | 'slack' | 'gmail' | 'hubspot' | 'notion' | 'browser' | null {
+    if (action.startsWith('jira_')) return 'jira';
+    if (action.startsWith('slack_')) return 'slack';
+    if (action.startsWith('gmail_')) return 'gmail';
+    if (action.startsWith('hubspot_')) return 'hubspot';
+    if (action.startsWith('notion_')) return 'notion';
+    if (['open_app', 'navigate', 'click', 'type', 'select', 'submit', 'extract', 'screenshot', 'wait'].includes(action)) return 'browser';
+    return null;
+  }
+
+  /** Format an action string into a readable label: "slack_send_message" → "Slack Send Message". */
+  private formatActionName(action: string): string {
+    return action.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
   /**

@@ -294,6 +294,26 @@ async function start() {
               // Use voiceMessage (short, plain text) so Nova Sonic doesn't read out
               // full markdown documents or long lists verbatim.
               const r = result as BedrockStreamEvent;
+
+              // If the orchestrator wants approval, tell Nova Sonic to ask the user
+              // and include the approvalId so a follow-up voice command can approve.
+              if (r.status === 'pending_approval' && r.approval) {
+                const writeDescs = (r.approval.writeActions ?? [])
+                  .map((w: BedrockStreamEvent) => w.description)
+                  .join(', ');
+                socket.send(JSON.stringify({ type: 'pending_approval', approvalId: r.approval.approvalId }));
+                const approvalVoiceResult = {
+                  status: 'pending_approval',
+                  approvalId: r.approval.approvalId,
+                  message: `I need your approval before proceeding. I would like to: ${writeDescs}. Should I go ahead?`,
+                };
+                const toolContentName = `tool-result-${randomUUID()}`;
+                enqueue({ event: { contentStart: { promptName, contentName: toolContentName, interactive: false, type: 'TOOL', role: 'TOOL', toolResultInputConfiguration: { toolUseId, type: 'TEXT', textInputConfiguration: { mediaType: 'text/plain' } } } } });
+                enqueue({ event: { toolResult: { promptName, contentName: toolContentName, content: JSON.stringify(approvalVoiceResult) } } });
+                enqueue({ event: { contentEnd: { promptName, contentName: toolContentName } } });
+                continue;
+              }
+
               const voiceResult = {
                 status: r.status ?? 'ok',
                 message: r.voiceMessage ?? r.message ?? JSON.stringify(result),
