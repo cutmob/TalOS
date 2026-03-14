@@ -1,0 +1,55 @@
+# Dependencies
+**/node_modules
+**/.npm
+
+# Build outputs (rebuilt in Docker)
+**/dist
+**/.next
+**/.turbo
+
+# Python
+**/__pycache__
+**/*.pyc
+**/.venv
+**/venv
+
+# Environment and secrets
+**/.env
+**/.env.*
+!**/.env.example
+
+# Version control
+.git
+.gitignore
+
+# IDE and editor
+**/.vscode
+**/.idea
+**/*.swp
+**/*.swo
+
+# OS files
+**/.DS_Store
+**/Thumbs.db
+
+# Test and dev tooling
+**/coverage
+**/.nyc_output
+**/*.test.ts
+**/*.spec.ts
+**/vitest.config.*
+
+# Docker
+**/Dockerfile
+**/docker-compose*.yml
+**/.dockerignore
+
+# Misc
+**/*.md
+**/LICENSE
+**/*.mp4
+fix.js
+list-models.mjs
+test-models.cjs
+test-models.mjs
+infra/

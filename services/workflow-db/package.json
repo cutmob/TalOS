@@ -5,6 +5,18 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "scripts": { "build": "tsc", "dev": "tsc --watch", "clean": "rm -rf dist" },
-  "dependencies": { "@talos/workflow-engine": "*" }
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@talos/workflow-engine": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "vitest": "^3.0.0"
+  }
 }

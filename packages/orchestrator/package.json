@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest",
+    "test": "vitest run --passWithNoTests",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -17,5 +17,10 @@
     "@talos/workflow-engine": "*",
     "@talos/memory-engine": "*",
     "@aws-sdk/client-bedrock-runtime": "^3.750.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "vitest": "^3.0.0"
   }
 }

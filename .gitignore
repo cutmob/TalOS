@@ -13,8 +13,12 @@ Thumbs.db
 # Raw video source files (not needed in repo)
 apps/*.mp4
 set-railway-vars.mjs
-set-railway-vars.mjs
 check-railway.mjs
 
 # Local IDE/Claude Code config — never commit
 .claude/
+
+# Scratch / test scripts (may contain credentials)
+fix.js
+test-models.*
+list-models.*

@@ -20,6 +20,10 @@ import {
 } from '@aws-sdk/client-bedrock-runtime';
 import { randomUUID } from 'node:crypto';
 
+/** Loosely-typed Bedrock stream event — shape varies per event type. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type BedrockStreamEvent = Record<string, any>;
+
 const server = Fastify({ logger: true });
 
 const REGION = process.env.BEDROCK_REGION ?? 'us-east-1';
@@ -210,11 +214,12 @@ async function start() {
             let parsed: Record<string, unknown>;
             try {
               parsed = JSON.parse(Buffer.from(raw).toString('utf8'));
-            } catch {
+            } catch (err) {
+              server.log.warn({ err }, 'Skipping unparseable Bedrock stream chunk');
               continue;
             }
 
-            const inner = (parsed as any).event ?? parsed;
+            const inner: BedrockStreamEvent = (parsed as BedrockStreamEvent).event ?? parsed;
 
             // Text transcript from Nova Sonic
             if (inner.textOutput) {
@@ -233,7 +238,9 @@ async function start() {
               let input: Record<string, unknown> = {};
               try {
                 input = JSON.parse(typeof content === 'string' ? content : JSON.stringify(content));
-              } catch { /* keep empty */ }
+              } catch (err) {
+                server.log.warn({ err, toolName, toolUseId }, 'Failed to parse tool input');
+              }
 
               server.log.info({ toolName, toolUseId, input }, 'Nova Sonic tool use');
               socket.send(JSON.stringify({ type: 'tool_start', toolName, toolUseId }));
@@ -267,7 +274,9 @@ async function start() {
                             const data = JSON.parse(line.slice(6));
                             if (evtType === 'progress') socket.send(JSON.stringify({ type: 'progress', ...data }));
                             if (evtType === 'result') result = data;
-                          } catch { /* skip malformed line */ }
+                          } catch (err) {
+                            server.log.warn({ err }, 'Skipping malformed SSE line');
+                          }
                           evtType = '';
                         }
                       }
@@ -281,10 +290,17 @@ async function start() {
                 }
               }
 
-              // Always return tool result to Nova Sonic so it can continue speaking
+              // Always return tool result to Nova Sonic so it can continue speaking.
+              // Use voiceMessage (short, plain text) so Nova Sonic doesn't read out
+              // full markdown documents or long lists verbatim.
+              const r = result as BedrockStreamEvent;
+              const voiceResult = {
+                status: r.status ?? 'ok',
+                message: r.voiceMessage ?? r.message ?? JSON.stringify(result),
+              };
               const toolContentName = `tool-result-${randomUUID()}`;
               enqueue({ event: { contentStart: { promptName, contentName: toolContentName, interactive: false, type: 'TOOL', role: 'TOOL', toolResultInputConfiguration: { toolUseId, type: 'TEXT', textInputConfiguration: { mediaType: 'text/plain' } } } } });
-              enqueue({ event: { toolResult: { promptName, contentName: toolContentName, content: JSON.stringify(result) } } });
+              enqueue({ event: { toolResult: { promptName, contentName: toolContentName, content: JSON.stringify(voiceResult) } } });
               enqueue({ event: { contentEnd: { promptName, contentName: toolContentName } } });
             }
 
@@ -332,6 +348,12 @@ async function start() {
 
       socket.on('close', () => {
         server.log.info('Voice client disconnected');
+        // Send proper closing sequence so Bedrock doesn't error on unclosed prompts
+        if (promptName && !sessionEnded) {
+          enqueue({ event: { contentEnd: { promptName, contentName: audioContentName } } });
+          enqueue({ event: { promptEnd: { promptName } } });
+          enqueue({ event: { sessionEnd: {} } });
+        }
         sessionEnded = true;
         queueResolve?.();
         queueResolve = null;

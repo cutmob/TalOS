@@ -7,7 +7,7 @@
     "build": "tsc",
     "dev": "tsx watch src/gateway.ts",
     "start": "node dist/gateway.js",
-    "test": "vitest",
+    "test": "vitest run --passWithNoTests",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -18,6 +18,9 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.0"
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "vitest": "^3.0.0"
   }
 }

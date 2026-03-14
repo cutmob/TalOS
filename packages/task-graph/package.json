@@ -8,10 +8,15 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest",
+    "test": "vitest run",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@talos/agent-runtime": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "vitest": "^3.0.0"
   }
 }

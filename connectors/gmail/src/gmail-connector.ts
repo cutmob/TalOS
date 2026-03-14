@@ -1,5 +1,11 @@
 import type { GmailConfig, EmailDraft } from './index.js';
 
+interface GmailMimePart {
+  mimeType: string;
+  body: { data?: string };
+  parts?: GmailMimePart[];
+}
+
 async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
   for (let attempt = 0; attempt < retries; attempt++) {
     try { return await fn(); } catch (err) {
@@ -123,7 +129,7 @@ export class GmailConnector {
     const data = await response.json() as {
       payload?: {
         headers?: Array<{ name: string; value: string }>;
-        parts?: Array<{ mimeType: string; body: { data?: string }; parts?: any[] }>;
+        parts?: GmailMimePart[];
         body?: { data?: string };
       };
     };
@@ -135,7 +141,7 @@ export class GmailConnector {
     // Extract body (try to find text/plain part)
     let bodyData = data.payload?.body?.data;
     if (!bodyData && data.payload?.parts) {
-      const getPlainText = (parts: any[]): string | undefined => {
+      const getPlainText = (parts: GmailMimePart[]): string | undefined => {
         for (const p of parts) {
           if (p.mimeType === 'text/plain' && p.body?.data) return p.body.data;
           if (p.parts) {

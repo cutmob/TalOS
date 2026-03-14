@@ -9,7 +9,12 @@ const figtree = Figtree({
 
 export const metadata: Metadata = {
   title: 'TalOS — The AI Operating System',
-  description: 'The AI operating system that runs enterprise software for you',
+  description: 'Voice-controlled AI operating system for enterprise software',
+  icons: {
+    icon: '/favicon.svg',
+  },
+  manifest: '/manifest.json',
+  themeColor: '#6366f1',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

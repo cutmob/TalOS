@@ -4,5 +4,16 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
-  "scripts": { "build": "tsc", "dev": "tsc --watch", "clean": "rm -rf dist" }
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "vitest": "^3.0.0"
+  },
+  "types": "./dist/index.d.ts"
 }

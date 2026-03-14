@@ -1,0 +1,65 @@
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - API_SERVER_URL=http://api-server:3001
+    depends_on:
+      api-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api-server:
+    build:
+      context: .
+      dockerfile: apps/api-server/Dockerfile
+    ports:
+      - "3001:3001"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - API_PORT=3001
+      - AUTOMATION_RUNNER_URL=http://automation-runner:3003
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/api/health').then(r=>{if(!r.ok)throw r.status}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  voice-gateway:
+    build:
+      context: .
+      dockerfile: apps/voice-gateway/Dockerfile
+    ports:
+      - "3002:3002"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - VOICE_GATEWAY_PORT=3002
+      - API_SERVER_URL=http://api-server:3001
+    depends_on:
+      api-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  automation-runner:
+    build:
+      context: .
+      dockerfile: apps/automation-runner/Dockerfile
+    ports:
+      - "3003:3003"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+    # Nova Act needs shared memory for Playwright/Chromium
+    shm_size: "2gb"
+    restart: unless-stopped

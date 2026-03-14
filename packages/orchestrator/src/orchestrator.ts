@@ -70,6 +70,7 @@ export class Orchestrator {
         status: 'completed',
         results: [],
         message: chatResponse,
+        voiceMessage: this.buildVoiceMessage(chatResponse),
       };
     }
 
@@ -89,6 +90,7 @@ export class Orchestrator {
         status: 'clarification',
         results: [],
         message: question,
+        voiceMessage: question,
       };
     }
 
@@ -108,6 +110,7 @@ export class Orchestrator {
     const allSucceeded = results.every((r) => r.status === 'success');
 
     const summaryMessage = this.buildSummaryMessage(results, allSucceeded);
+    const voiceMessage = this.buildVoiceMessage(summaryMessage);
 
     emit({
       phase: allSucceeded ? 'completed' : 'failed',
@@ -122,6 +125,7 @@ export class Orchestrator {
       status: allSucceeded ? 'completed' : 'failed',
       results,
       message: summaryMessage,
+      voiceMessage,
     };
   }
 
@@ -181,7 +185,7 @@ export class Orchestrator {
       console.log(`[Orchestrator] Bedrock response status: ${response.$metadata.httpStatusCode}`);
       const planText = response.output?.message?.content?.[0]?.text ?? '';
       return parsePlanResponse(planText);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(`[Orchestrator] Bedrock Planning Error:`, error);
       throw error;
     }
@@ -241,8 +245,23 @@ export class Orchestrator {
           if (settled.value.status === 'success') {
             completed.add(node.id);
           } else {
-            // Attempt recovery
+            // Attempt recovery — emit progress so the dashboard lights up the recovery dot
+            progress({
+              phase: 'executing',
+              message: `Recovering: ${node.action}`,
+              nodeId: node.id,
+              action: 'recover',
+              agentType: 'recovery',
+            });
             const recovered = await this.attemptRecovery(node, settled.value, sessionId);
+            progress({
+              phase: 'node_complete',
+              message: `Recovery ${recovered.status}: ${node.action}`,
+              nodeId: node.id,
+              action: 'recover',
+              agentType: 'recovery',
+              status: recovered.status,
+            });
             results.push(recovered);
             if (recovered.status === 'success') {
               completed.add(node.id);
@@ -289,6 +308,7 @@ export class Orchestrator {
     return {
       taskId: node.id,
       agentType: node.agentType,
+      action: node.action,
       status: 'success',
       output,
       duration: Date.now() - startTime,
@@ -381,6 +401,7 @@ export class Orchestrator {
       .replace(/^#{1,6}\s+/gm, '')                              // markdown headings
       .replace(/[*_`~]{1,3}([^*_`~]+)[*_`~]{1,3}/g, '$1')     // bold/italic/code spans
       .replace(/^\s*[-*+]\s+/gm, '')                            // markdown list bullets
+      .replace(/<[^>]+>/g, ' ')                                 // strip HTML/XML tags (e.g. Notion <page> elements)
       .replace(/\s{2,}/g, ' ')                                  // collapse whitespace
       .trim()
       .slice(0, maxLen);
@@ -505,14 +526,24 @@ export class Orchestrator {
 
       // ── Notion read page ──────────────────────────────────────────────────
       if (action === 'notion_read_page') {
-        const title = out.title as string | undefined;
-        const content = out.content as string | undefined;
-        if (!title && !content) {
-          messages.push('Notion page retrieved but no content found.');
+        if (out.status === 'not_found') {
+          const q = out.error as string | undefined;
+          const query = q?.match(/query: "([^"]+)"/)?.[1];
+          messages.push(`No Notion page found${query ? ` matching "${query}"` : ''}.`);
           continue;
         }
-        const snippet = content ? this.cleanSnippet(content, 300) : '(empty page)';
-        messages.push(`Notion page${title ? ` "${title}"` : ''}:\n${snippet}`);
+        const title = out.title as string | undefined;
+        const content = out.content as string | undefined;
+        // For page content, preserve markdown formatting — just strip invisible chars
+        // and truncate generously so the full summary comes through.
+        const cleanContent = content
+          ? content.replace(/[\u034F\u200B\u200C\u200D\uFEFF\u00AD]+/g, '').replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, 3000)
+          : '';
+        if (!title && !cleanContent) {
+          messages.push('That Notion page appears to be empty.');
+          continue;
+        }
+        messages.push(`${title ? `**${title}**\n` : ''}${cleanContent || '(no text content)'}`);
         continue;
       }
 
@@ -588,11 +619,11 @@ export class Orchestrator {
           ? 'Found 1 relevant document.'
           : `Found ${count} relevant documents.`;
 
-        const lines = items.slice(0, 3).map((k, idx) => {
+        const lines = items.slice(0, 6).map((k, idx) => {
           const title = k.title || `Result ${idx + 1}`;
           const source = k.source ? String(k.source) : undefined;
           const kind = k.objectType;
-          const snippet = k.text ? ` — ${this.cleanSnippet(k.text, 180)}` : '';
+          const snippet = k.text ? ` — ${this.cleanSnippet(k.text, 300)}` : '';
           const sourceTag = [source, kind].filter(Boolean).join(' · ');
           return `- ${title}${sourceTag ? ` (${sourceTag})` : ''}${snippet}`;
         });
@@ -716,5 +747,34 @@ export class Orchestrator {
       return 'Done. All tasks completed successfully.';
     }
     return 'Some tasks failed. Check the task history for details.';
+  }
+
+  /**
+   * Build a voice-optimized summary for Nova Sonic.
+   * Rules: plain text only (no markdown), ≤3 spoken sentences,
+   * lists capped at 2 items, page content trimmed to a brief oral summary.
+   */
+  private buildVoiceMessage(fullMessage: string): string {
+    // Strip markdown: headings, bold/italic, bullets, code, links
+    let text = fullMessage
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/[*_`~]{1,3}([^*_`~\n]+)[*_`~]{1,3}/g, '$1')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/!\[.*?\]\(.*?\)/g, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    // Split into sentences and cap at 3
+    const sentences = text
+      .split(/(?<=[.!?])\s+/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+
+    if (sentences.length <= 3) return sentences.join(' ');
+
+    // For longer content (e.g. full page reads), take first 2 sentences + a closing cue
+    return sentences.slice(0, 2).join(' ') + ' Want me to continue?';
   }
 }

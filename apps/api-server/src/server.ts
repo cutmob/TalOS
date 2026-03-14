@@ -14,6 +14,7 @@ while (envDir !== resolve(envDir, '..')) {
 dotenv.config({ path: resolve(envDir, '.env') });
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import { ZodError } from 'zod';
 import { registerRoutes } from './routes/index.js';
 import { createSystemFromEnv } from './config/orchestrator.js';
 
@@ -40,7 +41,24 @@ function getCorsOrigin(): string | string[] | boolean {
   return true; // allow all origins in development
 }
 
-const server = Fastify({ logger: true });
+const server = Fastify({
+  logger: process.env.NODE_ENV === 'test' ? false : true,
+});
+
+// Global error handler — formats Zod validation errors as structured JSON
+server.setErrorHandler((error: Error, _request, reply) => {
+  if (error instanceof ZodError) {
+    return reply.status(400).send({
+      error: 'Validation Error',
+      issues: error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    });
+  }
+  server.log.error(error);
+  const statusCode = 'statusCode' in error ? (error as { statusCode: number }).statusCode : 500;
+  return reply.status(statusCode ?? 500).send({
+    error: error.message ?? 'Internal Server Error',
+  });
+});
 
 async function start() {
   validateEnv();

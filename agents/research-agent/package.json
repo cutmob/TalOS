@@ -5,10 +5,20 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "vitest", "clean": "rm -rf dist" },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist"
+  },
   "dependencies": {
     "@talos/agent-runtime": "*",
     "@talos/memory-engine": "*",
     "@talos/workflow-engine": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "vitest": "^3.0.0"
   }
 }
