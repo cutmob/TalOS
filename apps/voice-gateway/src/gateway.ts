@@ -53,12 +53,21 @@ const SYSTEM_PROMPT =
   '- Mentions of contact/deal/crm/lead → targetApp: "hubspot"\n' +
   '- Mentions of page/doc/wiki/database/notion → targetApp: "notion"\n' +
   '- Web navigation or apps without a connector → targetApp: "browser"\n\n' +
+  'APPROVAL HANDLING:\n' +
+  'When a tool result has status "pending_approval", it means the action needs human confirmation.\n' +
+  '1. Speak the approval message naturally — tell the user what you want to do and ask for confirmation.\n' +
+  '2. When the user says "yes", "go ahead", "approved", "do it", or similar → call approveCommand with decision: "approve" and the approvalId from the pending result.\n' +
+  '3. When the user says "no", "cancel", "reject", "don\'t do that" → call approveCommand with decision: "reject".\n' +
+  '4. After approval executes, confirm the result as usual.\n' +
+  '5. NEVER re-call executeCommand for the same action after an approval — use approveCommand.\n\n' +
   'EXAMPLES OF GOOD RESPONSES:\n' +
   '"Done — bug ticket PROJ-142 created in Jira."\n' +
   '"Message sent to the engineering channel."\n' +
   '"Which Slack channel should I check?"\n' +
   '"Ticket creation failed — project key not found. Want me to try a different project?"\n' +
-  '"Jira or Slack?"\n\n' +
+  '"Jira or Slack?"\n' +
+  '"I need to send an email to alex@globex.com — should I go ahead?" (approval)\n' +
+  '"Got it, cancelled." (rejection)\n\n' +
   'Do NOT explain the plan before executing. Do NOT add commentary after confirming. NEVER use a "#" prefix for Slack channels.';
 
 const TALOS_TOOLS = [
@@ -91,6 +100,33 @@ const TALOS_TOOLS = [
             },
           },
           required: ['command', 'targetApp'],
+        }),
+      },
+    },
+  },
+  {
+    toolSpec: {
+      name: 'approveCommand',
+      description:
+        'Approve or reject a pending action that required human confirmation. ' +
+        'Call this when the user says "yes", "go ahead", "approved", "do it" (approve) or ' +
+        '"no", "cancel", "reject", "don\'t do that", "stop" (reject) in response to an approval request. ' +
+        'The approvalId is provided in the previous tool result when status was "pending_approval".',
+      inputSchema: {
+        json: JSON.stringify({
+          type: 'object',
+          properties: {
+            approvalId: {
+              type: 'string',
+              description: 'The approvalId from the pending_approval tool result.',
+            },
+            decision: {
+              type: 'string',
+              enum: ['approve', 'reject'],
+              description: 'Whether to approve or reject the pending action.',
+            },
+          },
+          required: ['approvalId', 'decision'],
         }),
       },
     },
@@ -290,6 +326,51 @@ async function start() {
                 }
               }
 
+              // Handle approval decisions via voice
+              if (toolName === 'approveCommand' && input.approvalId) {
+                try {
+                  const endpoint = input.decision === 'reject' ? 'reject' : 'approve';
+                  const approvalRes = await fetch(`${API_SERVER_URL}/api/approvals/${input.approvalId}/${endpoint}`, {
+                    method: 'POST',
+                    signal: AbortSignal.timeout(60_000),
+                  });
+
+                  if (endpoint === 'approve' && approvalRes.body) {
+                    // Stream progress events from approval execution to dashboard
+                    const approvalReader = approvalRes.body.getReader();
+                    const approvalDecoder = new TextDecoder();
+                    let approvalBuf = '';
+                    let approvalEvtType = '';
+                    while (true) {
+                      const { done: approvalDone, value: approvalValue } = await approvalReader.read();
+                      if (approvalDone) break;
+                      approvalBuf += approvalDecoder.decode(approvalValue, { stream: true });
+                      const approvalLines = approvalBuf.split('\n');
+                      approvalBuf = approvalLines.pop() ?? '';
+                      for (const approvalLine of approvalLines) {
+                        if (approvalLine.startsWith('event: ')) { approvalEvtType = approvalLine.slice(7).trim(); }
+                        else if (approvalLine.startsWith('data: ')) {
+                          try {
+                            const approvalData = JSON.parse(approvalLine.slice(6));
+                            if (approvalEvtType === 'progress') socket.send(JSON.stringify({ type: 'progress', ...approvalData }));
+                            if (approvalEvtType === 'result') result = approvalData;
+                          } catch { /* skip */ }
+                          approvalEvtType = '';
+                        }
+                      }
+                    }
+                  } else if (endpoint === 'reject') {
+                    result = { status: 'rejected', message: 'Action cancelled — no changes were made.' };
+                  }
+                  socket.send(JSON.stringify({ type: 'approval_resolved', decision: endpoint }));
+                  socket.send(JSON.stringify({ type: 'task_result', result }));
+                } catch (err) {
+                  server.log.error({ err }, 'approveCommand failed');
+                  result = { status: 'failed', error: String(err) };
+                  socket.send(JSON.stringify({ type: 'task_result', result }));
+                }
+              }
+
               // Always return tool result to Nova Sonic so it can continue speaking.
               // Use voiceMessage (short, plain text) so Nova Sonic doesn't read out
               // full markdown documents or long lists verbatim.
@@ -329,15 +410,17 @@ async function start() {
             }
           }
         } catch (err) {
+          const msg = err instanceof Error ? err.message : JSON.stringify(err);
           server.log.error({ err }, 'Bedrock stream error');
           if (socket.readyState === socket.OPEN) {
-            socket.send(JSON.stringify({ type: 'error', message: String(err) }));
+            socket.send(JSON.stringify({ type: 'error', message: msg }));
           }
         }
       }).catch((err) => {
+        const msg = err instanceof Error ? err.message : JSON.stringify(err);
         server.log.error({ err }, 'Failed to invoke Nova Sonic');
         if (socket.readyState === socket.OPEN) {
-          socket.send(JSON.stringify({ type: 'error', message: String(err) }));
+          socket.send(JSON.stringify({ type: 'error', message: msg }));
         }
       });
 

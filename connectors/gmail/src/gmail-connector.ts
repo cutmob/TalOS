@@ -243,6 +243,52 @@ export class GmailConnector {
     if (!response.ok) throw new Error(`Gmail batchModify error: ${response.status}`);
   }
 
+  // ── Google People API — contact search ───────────────────────────────────
+  // Scope: contacts.readonly  (uses the same OAuth2 token)
+  // Searches the user's Google Contacts by name, email, or phone number.
+  async searchContacts(params: { query: string; limit?: number }): Promise<Array<{
+    name: string;
+    email: string;
+    phone?: string;
+    organization?: string;
+  }>> {
+    const token = await this.getAccessToken();
+    const url = new URL('https://people.googleapis.com/v1/people:searchContacts');
+    url.searchParams.set('query', params.query);
+    url.searchParams.set('readMask', 'names,emailAddresses,phoneNumbers,organizations');
+    url.searchParams.set('pageSize', String(params.limit ?? 10));
+
+    const response = await withRetry(() => fetch(url.toString(), {
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(15_000),
+    }));
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '');
+      throw new Error(`People API searchContacts error: ${response.status} ${errBody}`);
+    }
+
+    const data = await response.json() as {
+      results?: Array<{
+        person: {
+          names?: Array<{ displayName?: string }>;
+          emailAddresses?: Array<{ value?: string }>;
+          phoneNumbers?: Array<{ value?: string }>;
+          organizations?: Array<{ name?: string; title?: string }>;
+        };
+      }>;
+    };
+
+    return (data.results ?? [])
+      .filter((r) => r.person.emailAddresses?.some((e) => e.value))
+      .map((r) => ({
+        name: r.person.names?.[0]?.displayName ?? '',
+        email: r.person.emailAddresses![0].value!,
+        phone: r.person.phoneNumbers?.[0]?.value,
+        organization: r.person.organizations?.[0]?.name,
+      }));
+  }
+
   // ── helpers ───────────────────────────────────────────────────────────────
 
   private buildRaw(opts: {

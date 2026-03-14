@@ -343,6 +343,8 @@ export default function DashboardPage() {
   const pendingTaskIdRef = useRef<string | null>(null);
   // Track when each agent dot was activated so we can enforce a minimum visible duration
   const agentActivatedAtRef = useRef<Map<string, number>>(new Map());
+  // Track the active voice task so progress events can attach to it
+  const voiceTaskIdRef = useRef<string | null>(null);
   // Track transcript source to prevent voice textOutput from overwriting task result markdown
   const transcriptSourceRef = useRef<'voice' | 'result' | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
@@ -694,7 +696,7 @@ export default function DashboardPage() {
     const ws = new WebSocket(`${voiceUrl}/ws/voice`);
     wsRef.current = ws;
     ws.onopen = () => { /* wait for 'ready' before marking live */ };
-    ws.onclose = () => { setIsVoiceConnected(false); wsRef.current = null; };
+    ws.onclose = () => { setIsVoiceConnected(false); setMicState('idle'); wsRef.current = null; };
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data as string) as Record<string, unknown>;
@@ -709,6 +711,76 @@ export default function DashboardPage() {
             setTranscript(msg.text as string);
           }
         }
+        // Real-time progress from voice gateway — light up agent dots as steps execute
+        if (msg.type === 'progress') {
+          const phase = msg.phase as string;
+          const action = msg.action as string | undefined;
+          const agentType = msg.agentType as string | undefined;
+          const nodeId = msg.nodeId as string | undefined;
+          const status = msg.status as string | undefined;
+
+          // Create a running voice task entry on first progress event
+          if (!voiceTaskIdRef.current) {
+            const id = `voice_${Date.now()}`;
+            voiceTaskIdRef.current = id;
+            setTasks((prev) => [{
+              id,
+              command: transcript || 'Voice command',
+              status: 'running',
+              startedAt: Date.now(),
+              progressLabel: 'planning',
+              pendingSteps: [],
+            }, ...prev]);
+          }
+
+          const taskId = voiceTaskIdRef.current;
+
+          if (phase === 'planning') {
+            setActiveAgents((prev) => new Set([...prev, 'orchestrator']));
+          } else if (phase === 'executing' && nodeId && agentType) {
+            const agent = visualAgent(action, agentType);
+            agentActivatedAtRef.current.set(agent, Date.now());
+            setActiveAgents((prev) => new Set([...prev, 'orchestrator', agent]));
+            setTasks((prev) => prev.map((t) => {
+              if (t.id !== taskId) return t;
+              const alreadyExists = (t.pendingSteps ?? []).some((s) => s.nodeId === nodeId);
+              if (alreadyExists) return t;
+              return {
+                ...t,
+                progressLabel: labelAction(action, nodeId),
+                pendingSteps: [...(t.pendingSteps ?? []), {
+                  nodeId,
+                  action: action ?? nodeId,
+                  agentType: agentType,
+                  status: 'running' as const,
+                }],
+              };
+            }));
+          } else if (phase === 'node_complete' && nodeId) {
+            // Update step status
+            setTasks((prev) => prev.map((t) => {
+              if (t.id !== taskId) return t;
+              const steps = (t.pendingSteps ?? []).map((s) =>
+                s.nodeId === nodeId ? { ...s, status: (status === 'success' ? 'success' : 'failure') as PendingStep['status'] } : s
+              );
+              return { ...t, pendingSteps: steps };
+            }));
+
+            const completedAgent = visualAgent(action, agentType);
+            const activatedAt = agentActivatedAtRef.current.get(completedAgent) ?? 0;
+            const elapsed = Date.now() - activatedAt;
+            const remainingDelay = Math.max(2000 - elapsed, 300);
+
+            setTimeout(() => {
+              setActiveAgents((prev) => {
+                const updated = new Set(prev);
+                updated.delete(completedAgent);
+                return updated;
+              });
+            }, remainingDelay);
+          }
+        }
+
         // Nova Sonic executed a command via tool use — show it in task feed
         if (msg.type === 'task_result') {
           const result = msg.result as {
@@ -720,28 +792,31 @@ export default function DashboardPage() {
           if (result?.message) {
             transcriptSourceRef.current = 'result';
             setTranscript(result.message);
-            // Allow voice transcript updates again after 5s (next turn)
             setTimeout(() => { transcriptSourceRef.current = null; }, 5000);
           }
 
-          // Light up agent status dots based on which agents actually ran
-          if (result?.results && result.results.length > 0) {
-            const types = new Set<string>(result.results.map((r) => visualAgent(r.action as string | undefined, r.agentType)));
-            types.add('orchestrator');
-            setActiveAgents(types);
-            setTimeout(() => setActiveAgents(new Set()), 1500);
-          }
-
-          // Mirror voice commands into the same task history as typed commands
           const now = Date.now();
-          const taskId = `voice_${now}`;
           const ok =
             result.results?.every((r) => r.status === 'success') ??
             result.status === 'completed';
 
-          setTasks((prev) => [
-            {
-              id: taskId,
+          if (voiceTaskIdRef.current) {
+            // Finalize the task entry created by progress events
+            const taskId = voiceTaskIdRef.current;
+            voiceTaskIdRef.current = null;
+            setTasks((prev) => prev.map((t) => t.id !== taskId ? t : {
+              ...t,
+              status: ok ? 'completed' : 'failed',
+              completedAt: now,
+              duration: now - t.startedAt,
+              results: result.results as TaskResult[] | undefined,
+              message: result.message,
+              pendingSteps: undefined,
+            }));
+          } else {
+            // No progress events were received — create a completed entry directly
+            setTasks((prev) => [{
+              id: `voice_${now}`,
               command: transcript || 'Voice command',
               status: ok ? 'completed' : 'failed',
               startedAt: now,
@@ -749,15 +824,42 @@ export default function DashboardPage() {
               duration: 0,
               results: result.results as TaskResult[] | undefined,
               message: result.message,
-            },
-            ...prev,
-          ]);
+            }, ...prev]);
+          }
+
+          // Flash remaining agent dots from results then clear
+          if (result?.results && result.results.length > 0) {
+            const types = new Set<string>(result.results.map((r) => visualAgent(r.action as string | undefined, r.agentType)));
+            types.add('orchestrator');
+            setActiveAgents(types);
+            setTimeout(() => setActiveAgents(new Set()), 1500);
+          } else {
+            setTimeout(() => setActiveAgents(new Set()), 500);
+          }
         }
-        if (msg.type === 'error' && msg.message) console.error('Voice error:', msg.message);
+        // Voice approval — show the approval card when voice gateway sends pending_approval
+        if (msg.type === 'pending_approval' && msg.approvalId) {
+          // Fetch full approval details from the API so the card can render write/read actions
+          const apiBase = process.env.NEXT_PUBLIC_API_SERVER_URL ?? '';
+          fetch(`${apiBase}/api/approvals/${msg.approvalId}`)
+            .then((r) => r.ok ? r.json() : null)
+            .then((data) => {
+              if (data) setPendingApproval(data as PendingApprovalData);
+            })
+            .catch(() => { /* approval card won't show — voice can still approve */ });
+        }
+
+        // Voice approval resolved — dismiss the approval card
+        if (msg.type === 'approval_resolved') {
+          setPendingApproval(null);
+          setApprovalLoading(false);
+        }
+
+        if (msg.type === 'error' && msg.message) console.error('Voice error:', typeof msg.message === 'string' ? msg.message : JSON.stringify(msg.message));
       } catch { /* ignore */ }
     };
     return ws;
-  }, [submitCommand, playPCM24k, transcript]);
+  }, [submitCommand, playPCM24k]);
 
   // ── Mic start / stop ──────────────────────────────────────────────────────
 
@@ -786,6 +888,7 @@ export default function DashboardPage() {
       worklet.connect(ctx.destination);
       // micState transitions to 'listening' when Bedrock sends 'ready'
     } catch {
+      setMicState('idle');
       alert('Microphone access denied. Please allow mic permissions and try again.');
     }
   }, [connectVoiceWS]);
@@ -916,6 +1019,7 @@ export default function DashboardPage() {
       'slack_read_messages', 'slack_list_channels',
       'hubspot_search_contacts', 'hubspot_search_deals', 'hubspot_search_objects',
       'hubspot_list_properties', 'notion_search', 'notion_read_page', 'knowledge_search',
+      'gmail_search_contacts',
     ];
     return reads.includes(action) ? 'research' : backendAgent || 'execution';
   };
@@ -1457,7 +1561,7 @@ export default function DashboardPage() {
             borderRadius: 12, padding: '1rem 1.25rem',
             animation: 'slideUp 0.3s ease',
           }}>
-            <div style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#f59e0b', marginBottom: '0.5rem' }}>
+            <div style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: t.text1, marginBottom: '0.5rem' }}>
               Approval Required
             </div>
             <div style={{ fontSize: '0.85rem', color: t.text2, lineHeight: 1.5, marginBottom: '0.75rem' }}>
@@ -1495,8 +1599,9 @@ export default function DashboardPage() {
                 disabled={approvalLoading}
                 style={{
                   padding: '0.4rem 1rem', borderRadius: 6,
-                  border: 'none',
-                  background: '#6366f1', color: '#fff',
+                  border: `1px solid ${lightMode ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.2)'}`,
+                  background: lightMode ? '#111' : '#e8e8e8',
+                  color: lightMode ? '#fff' : '#111',
                   fontSize: '0.8rem', fontWeight: 500, cursor: 'pointer',
                   opacity: approvalLoading ? 0.5 : 1,
                 }}

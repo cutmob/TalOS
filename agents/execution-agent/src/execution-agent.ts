@@ -103,6 +103,7 @@ export class ExecutionAgent extends BaseAgent {
       case 'gmail_read_email':        return this.gmailReadEmail(task);
       case 'gmail_reply':             return this.gmailReply(task);
       case 'gmail_modify_labels':     return this.gmailModifyLabels(task);
+      case 'gmail_search_contacts':   return this.gmailSearchContacts(task);
       // ── HubSpot ──
       case 'hubspot_create_contact':  return this.hubspotCreateContact(task);
       case 'hubspot_search_contacts': return this.hubspotSearchContacts(task);
@@ -530,7 +531,23 @@ export class ExecutionAgent extends BaseAgent {
   private async gmailSendEmail(task: AgentTask): Promise<unknown> {
     if (!this.gmail) return { error: 'Gmail not configured', status: 'skipped' };
     const p = task.parameters;
-    const to = Array.isArray(p.to) ? p.to as string[] : [(p.to ?? p.email) as string];
+
+    // Resolve recipient from dependency results (e.g. gmail_search_contacts → contacts[0].email)
+    let to = Array.isArray(p.to) ? p.to as string[] : p.to ? [p.to as string] : [];
+    const deps = p._deps as Record<string, Record<string, unknown>> | undefined;
+    const hasUnresolved = to.length === 0 || to.some((addr) => addr.includes('{{'));
+    if (hasUnresolved && deps) {
+      for (const depOutput of Object.values(deps)) {
+        const contacts = depOutput.contacts as Array<{ email?: string }> | undefined;
+        if (contacts?.length && contacts[0].email) {
+          to = [contacts[0].email];
+          break;
+        }
+      }
+    }
+    if (to.length === 0 || to.some((addr) => addr.includes('{{'))) {
+      return { error: 'No recipient email resolved — contact lookup may have returned no results', status: 'failure' };
+    }
     const result = await this.gmail.sendEmail({
       to,
       subject: p.subject as string,
@@ -583,6 +600,16 @@ export class ExecutionAgent extends BaseAgent {
       removeLabels: p.removeLabels as string[] | undefined,
     });
     return { action: 'gmail_modify_labels', messageIds, status: 'updated' };
+  }
+
+  private async gmailSearchContacts(task: AgentTask): Promise<unknown> {
+    if (!this.gmail) return { error: 'Gmail not configured', status: 'skipped' };
+    const p = task.parameters;
+    const contacts = await this.gmail.searchContacts({
+      query: (p.query ?? p.name) as string,
+      limit: (p.limit ?? p.maxResults) as number | undefined,
+    });
+    return { action: 'gmail_search_contacts', contacts, count: contacts.length };
   }
 
   // ── HubSpot ───────────────────────────────────────────────────────────────
@@ -1112,6 +1139,7 @@ export class ExecutionAgent extends BaseAgent {
       { name: 'gmail_read_email', description: 'Read full email body', parameters: { messageId: { type: 'string', description: 'Message ID', required: true } } },
       { name: 'gmail_reply', description: 'Reply to a Gmail thread', parameters: { threadId: { type: 'string', description: 'Thread ID', required: true }, messageId: { type: 'string', description: 'Message-ID header value', required: true }, to: { type: 'string', description: 'Reply-to address', required: true }, subject: { type: 'string', description: 'Subject', required: true }, body: { type: 'string', description: 'Reply body', required: true } } },
       { name: 'gmail_modify_labels', description: 'Add or remove Gmail labels', parameters: { messageIds: { type: 'array', description: 'Message IDs', required: true }, addLabels: { type: 'array', description: 'Label IDs to add', required: false }, removeLabels: { type: 'array', description: 'Label IDs to remove', required: false } } },
+      { name: 'gmail_search_contacts', description: 'Search Google Contacts by name, email, or phone', parameters: { query: { type: 'string', description: 'Name, email, or phone to search for', required: true }, limit: { type: 'number', description: 'Max results (default 10)', required: false } } },
       // ── HubSpot ──
       { name: 'hubspot_create_contact', description: 'Create a HubSpot contact', parameters: { email: { type: 'string', description: 'Email address', required: true }, firstName: { type: 'string', description: 'First name', required: false }, lastName: { type: 'string', description: 'Last name', required: false }, company: { type: 'string', description: 'Company', required: false } } },
       { name: 'hubspot_search_contacts', description: 'Search HubSpot contacts', parameters: { query: { type: 'string', description: 'Search query', required: true } } },

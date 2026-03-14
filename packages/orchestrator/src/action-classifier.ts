@@ -16,6 +16,7 @@ const READ_ACTIONS = new Set([
   // Gmail
   'gmail_search',
   'gmail_read_email',
+  'gmail_search_contacts',
   // HubSpot
   'hubspot_search_contacts',
   'hubspot_search_deals',
@@ -26,7 +27,9 @@ const READ_ACTIONS = new Set([
   'notion_read_page',
   // Cross-tool
   'knowledge_search',
-  // Browser (observation)
+  // Browser (observation / navigation)
+  'open_app',
+  'navigate',
   'screenshot',
   'extract',
   'wait',

@@ -197,7 +197,7 @@ export class Orchestrator {
         },
       ],
       inferenceConfig: {
-        maxTokens: 4096,
+        maxTokens: 8192,
         temperature: 0.1,
         topP: 0.9,
       },
@@ -219,8 +219,72 @@ export class Orchestrator {
    * Phase 2: Walk the task graph, delegate each node to the correct agent.
    * Respects dependency ordering — parallel where possible, sequential where required.
    */
+  /**
+   * Resolve dependency outputs into a node's parameters.
+   * When a node depends on prior steps, inject their results as `_deps`
+   * so the execution agent can use them (e.g. contact email from step_1).
+   * Also resolves {{step_N.field}} template references in string parameters.
+   */
+  private resolveDepParams(node: import('@talos/task-graph').TaskNode, resultMap: Map<string, TaskResult>): Record<string, unknown> {
+    const params = { ...node.parameters };
+
+    // Collect outputs from all dependency nodes
+    if (node.dependencies.length > 0) {
+      const deps: Record<string, unknown> = {};
+      for (const depId of node.dependencies) {
+        const depResult = resultMap.get(depId);
+        if (depResult?.output) deps[depId] = depResult.output;
+      }
+      if (Object.keys(deps).length > 0) params._deps = deps;
+    }
+
+    // Resolve {{step_N.field}} templates in string parameter values
+    const templateRe = /\{\{(\w+)\.(\w+)\}\}/g;
+    for (const [key, val] of Object.entries(params)) {
+      if (typeof val === 'string' && val.includes('{{')) {
+        params[key] = val.replace(templateRe, (_match, stepId: string, field: string) => {
+          const dep = resultMap.get(stepId);
+          if (!dep?.output || typeof dep.output !== 'object') return _match;
+          const out = dep.output as Record<string, unknown>;
+          // Direct field access (e.g. {{step_1.email}})
+          if (out[field] !== undefined) return String(out[field]);
+          // Nested in first result of an array (e.g. contacts[0].email)
+          if (Array.isArray(out.contacts) && out.contacts.length > 0 && out.contacts[0][field]) {
+            return String(out.contacts[0][field]);
+          }
+          if (Array.isArray(out.results) && out.results.length > 0 && out.results[0][field]) {
+            return String(out.results[0][field]);
+          }
+          return _match;
+        });
+      }
+      // Handle array values with templates (e.g. to: ["{{step_1.email}}"])
+      if (Array.isArray(val)) {
+        params[key] = val.map((item) => {
+          if (typeof item !== 'string' || !item.includes('{{')) return item;
+          return item.replace(templateRe, (_match, stepId: string, field: string) => {
+            const dep = resultMap.get(stepId);
+            if (!dep?.output || typeof dep.output !== 'object') return _match;
+            const out = dep.output as Record<string, unknown>;
+            if (out[field] !== undefined) return String(out[field]);
+            if (Array.isArray(out.contacts) && out.contacts.length > 0 && out.contacts[0][field]) {
+              return String(out.contacts[0][field]);
+            }
+            if (Array.isArray(out.results) && out.results.length > 0 && out.results[0][field]) {
+              return String(out.results[0][field]);
+            }
+            return _match;
+          });
+        });
+      }
+    }
+
+    return params;
+  }
+
   private async execute(graph: TaskGraph, sessionId: string, emit?: (e: import('./types.js').ProgressEvent) => void): Promise<TaskResult[]> {
     const results: TaskResult[] = [];
+    const resultMap = new Map<string, TaskResult>();
     const completed = new Set<string>();
     const progress = emit ?? (() => {});
 
@@ -247,9 +311,9 @@ export class Orchestrator {
         });
       }
 
-      // Execute ready tasks in parallel (up to concurrency limit)
+      // Execute ready tasks in parallel — resolve dependency outputs into parameters
       const batchResults = await Promise.allSettled(
-        ready.map((node) => this.executeNode(node, sessionId))
+        ready.map((node) => this.executeNode(node, sessionId, resultMap))
       );
 
       for (let i = 0; i < ready.length; i++) {
@@ -258,6 +322,7 @@ export class Orchestrator {
 
         if (settled.status === 'fulfilled') {
           results.push(settled.value);
+          resultMap.set(node.id, settled.value);
           progress({
             phase: 'node_complete',
             message: `${node.action} — ${settled.value.status}`,
@@ -318,14 +383,19 @@ export class Orchestrator {
     return results;
   }
 
-  private async executeNode(node: TaskNode, sessionId: string): Promise<TaskResult> {
+  private async executeNode(node: TaskNode, sessionId: string, resultMap?: Map<string, TaskResult>): Promise<TaskResult> {
     const startTime = Date.now();
     const agent = this.agentPool.getAgent(node.agentType);
+
+    // Resolve dependency outputs into parameters (template refs + _deps context)
+    const resolvedParams = resultMap && node.dependencies.length > 0
+      ? this.resolveDepParams(node, resultMap)
+      : node.parameters;
 
     const output = await agent.execute({
       taskId: node.id,
       action: node.action,
-      parameters: node.parameters,
+      parameters: resolvedParams,
       sessionId,
     });
 
@@ -572,42 +642,61 @@ export class Orchestrator {
   private describeAction(node: TaskNode): string {
     const p = node.parameters;
     switch (node.action) {
-      case 'gmail_send_email':
-        return `Send email to ${(p.to as string[])?.join(', ') ?? 'recipient'}${p.subject ? ` — "${p.subject}"` : ''}`;
-      case 'gmail_reply':
-        return `Reply to email thread${p.subject ? ` "${p.subject}"` : ''}`;
+      case 'gmail_send_email': {
+        const to = (p.to as string[])?.join(', ') ?? 'recipient';
+        const subj = p.subject ? `\n  Subject: ${p.subject}` : '';
+        const body = p.body ? `\n  Body: ${(p.body as string).slice(0, 200)}${(p.body as string).length > 200 ? '…' : ''}` : '';
+        return `Send email to ${to}${subj}${body}`;
+      }
+      case 'gmail_reply': {
+        const subj = p.subject ? `\n  Subject: ${p.subject}` : '';
+        const body = p.body ? `\n  Body: ${(p.body as string).slice(0, 200)}${(p.body as string).length > 200 ? '…' : ''}` : '';
+        return `Reply to email thread${subj}${body}`;
+      }
       case 'gmail_modify_labels':
         return `Modify labels on ${(p.messageIds as string[])?.length ?? 0} email(s)`;
-      case 'slack_send_message':
-        return `Send message to #${p.channel ?? 'channel'}${p.text ? `: "${(p.text as string).slice(0, 60)}${(p.text as string).length > 60 ? '…' : ''}"` : ''}`;
-      case 'slack_send_dm':
-        return `Send DM to user ${p.userId ?? 'unknown'}`;
-      case 'slack_reply_in_thread':
-        return `Reply in thread in #${p.channel ?? 'channel'}`;
+      case 'slack_send_message': {
+        const text = p.text as string | undefined;
+        return `Send message to #${p.channel ?? 'channel'}${text ? `\n  Message: ${text.slice(0, 200)}${text.length > 200 ? '…' : ''}` : ''}`;
+      }
+      case 'slack_send_dm': {
+        const text = p.message as string | undefined;
+        return `Send DM to user ${p.userId ?? 'unknown'}${text ? `\n  Message: ${text.slice(0, 200)}${text.length > 200 ? '…' : ''}` : ''}`;
+      }
+      case 'slack_reply_in_thread': {
+        const text = p.message as string | undefined;
+        return `Reply in thread in #${p.channel ?? 'channel'}${text ? `\n  Message: ${text.slice(0, 200)}${text.length > 200 ? '…' : ''}` : ''}`;
+      }
       case 'slack_add_reaction':
         return `Add :${p.emoji ?? 'emoji'}: reaction`;
       case 'slack_upload_file':
         return `Upload file "${p.filename ?? 'file'}" to #${p.channel ?? 'channel'}`;
-      case 'jira_create_ticket':
-        return `Create Jira ticket${p.summary ? `: "${p.summary}"` : ''}${p.priority ? ` [${p.priority}]` : ''}`;
+      case 'jira_create_ticket': {
+        const desc = p.description ? `\n  Description: ${(p.description as string).slice(0, 200)}${(p.description as string).length > 200 ? '…' : ''}` : '';
+        return `Create Jira ticket${p.summary ? `: "${p.summary}"` : ''}${p.priority ? ` [${p.priority}]` : ''}${desc}`;
+      }
       case 'jira_update_ticket':
         return `Update Jira ticket${p.key ? ` ${p.key}` : ''}`;
       case 'hubspot_create_contact':
-        return `Create HubSpot contact${p.firstName || p.lastName ? `: ${[p.firstName, p.lastName].filter(Boolean).join(' ')}` : ''}`;
+        return `Create HubSpot contact${p.firstName || p.lastName ? `: ${[p.firstName, p.lastName].filter(Boolean).join(' ')}` : ''}${p.email ? ` (${p.email})` : ''}`;
       case 'hubspot_update_contact':
         return `Update HubSpot contact`;
       case 'hubspot_create_deal':
-        return `Create HubSpot deal${p.name ? `: "${p.name}"` : ''}`;
+        return `Create HubSpot deal${p.name ? `: "${p.name}"` : ''}${p.amount ? ` — $${p.amount}` : ''}`;
       case 'hubspot_update_deal':
         return `Update HubSpot deal`;
-      case 'hubspot_log_activity':
-        return `Log activity in HubSpot`;
+      case 'hubspot_log_activity': {
+        const note = p.note as string | undefined;
+        return `Log activity in HubSpot${note ? `\n  Note: ${note.slice(0, 200)}${note.length > 200 ? '…' : ''}` : ''}`;
+      }
       case 'notion_create_page':
         return `Create Notion page${p.title ? `: "${p.title}"` : ''}`;
       case 'notion_update_page':
         return `Update Notion page`;
-      case 'notion_append_block':
-        return `Append content to Notion page`;
+      case 'notion_append_block': {
+        const content = p.content as string | undefined;
+        return `Append to Notion page${content ? `\n  Content: ${content.slice(0, 200)}${content.length > 200 ? '…' : ''}` : ''}`;
+      }
       default:
         return `Execute ${this.formatActionName(node.action)}`;
     }

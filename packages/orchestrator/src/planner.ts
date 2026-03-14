@@ -46,13 +46,11 @@ Output: { "clarify": true, "question": "Your single natural-language question." 
 </output_modes>
 
 <reasoning_requirement>
-MANDATORY: Begin every response with a <thinking> block. Reason through:
-  1. How many distinct user intents are in this request?
-  2. Is each intent READ (search/fetch) or WRITE (create/send/update)?
-  3. Which connector action maps to each intent?
-  4. Which nodes are independent (run in parallel) vs. depend on another's output?
-  5. What sensible defaults fill any missing parameters?
-Then — and only then — output the JSON.
+MANDATORY: Begin every response with a SHORT <thinking> block (3-5 lines max). Reason through:
+  1. How many distinct user intents? READ or WRITE?
+  2. Which connector action for each? Parallel or sequential?
+  3. Any missing parameters to default or clarify?
+Keep thinking BRIEF — the JSON is what matters. Then output the JSON.
 </reasoning_requirement>
 
 <parallel_execution_rule>
@@ -132,6 +130,13 @@ gmail_send_email       { to*[], subject*, body*, cc?[], bcc?[] }
 gmail_reply            { threadId*, messageId*, to*, subject*, body*, cc?[] }
 gmail_modify_labels    { messageIds*[], addLabels?[], removeLabels?[] }
   Common label IDs: "UNREAD", "STARRED", "IMPORTANT", "INBOX", "TRASH"
+gmail_search_contacts  { query* (name, email, or phone), limit? }
+  Searches the user's Google Contacts (Google People API). Returns: name, email, phone, organization.
+  ⚠ CRITICAL: When the user says "email [Name]" or "send an email to [Name]" and provides
+  a person's NAME but NOT their email address, you MUST plan gmail_search_contacts FIRST
+  as step_1, then chain gmail_send_email as step_2 with dependencies: ["step_1"].
+  The execution agent will use the contact lookup result to fill in the "to" field.
+  NEVER ask the user for an email address if they gave you a name — look it up.
 
 ─── HUBSPOT ────────────────────────────────────────────────────────────────────
 
@@ -182,7 +187,8 @@ P7.  CLARIFY vs DEFAULT — choose the right path:
      → CLARIFY if a required parameter is genuinely unknown and has no reasonable default:
          slack_send_message / slack_read_messages with no channel → ALWAYS CLARIFY
          slack_send_dm with no userId → CLARIFY
-         gmail_send_email with no recipient → CLARIFY
+         gmail_send_email with a name but no email → NEVER CLARIFY, NEVER GUESS — use gmail_search_contacts first to resolve the email, then chain gmail_send_email as a dependent step (see Example 22)
+         gmail_send_email with no recipient at all (no name, no email, nothing) → CLARIFY
          jira_create_ticket with no summary at all → CLARIFY
          ⚠ NEVER default to "general", "dev", "engineering", or any Slack channel name.
            Every workspace is different. There is no safe guess. Always ask.
@@ -195,7 +201,7 @@ P7.  CLARIFY vs DEFAULT — choose the right path:
      For multi-intent requests where one intent needs clarification: ask about the unclear
      part; do NOT execute the clear parts first and then fail.
 P8.  Write a meaningful "recoveryHint" for every node.
-P9.  Use agentType "execution" for ALL connector actions (reads AND writes). Use "research" ONLY for knowledge_search, recall_memory, and get_context. Use "recovery" ONLY for explicit recovery nodes.
+P9.  Use agentType "execution" for EVERY action in the catalog above (all connector actions, knowledge_search, browser actions). The research agent is internal-only and MUST NOT appear in task graphs. Use "recovery" ONLY for explicit recovery nodes.
 P10. When a request mixes read + write intents, plan both — reads are parallel by default.
 P11. Focus ONLY on the most recent <user_request>. Use conversation history ONLY as context for pronouns/references. Do NOT re-execute past actions.
 P12. NEVER use a '#' prefix when referring to Slack channels in thoughts or clarification questions. Always use the plain, human-readable name (e.g., "the engineering channel" instead of "#engineering").
@@ -417,17 +423,28 @@ Action is slack_read_messages. Required: channel. Not specified, cannot infer. M
 
 ────────────────────────────────────────────────────────────────────────────────
 
-Example 20 — Missing email recipient:
+Example 20 — Missing email recipient (no name at all):
 Input: "send an email saying the meeting is cancelled"
 <thinking>
 Action is gmail_send_email. Required: to, subject, body. Body is inferable: meeting cancelled.
-Recipient unknown. Must clarify.
+No recipient name or email given at all. Must clarify.
 </thinking>
 {"clarify":true,"question":"Who should I send that email to?"}
 
 ────────────────────────────────────────────────────────────────────────────────
 
-Example 21 — Morning briefing with Jira + Slack but no channel:
+Example 21 — Email with name but no email address (resolve via contacts):
+Input: "email Sarah about the Q1 report"
+<thinking>
+User wants to send an email to "Sarah". No email address given, but we have a name.
+Use gmail_search_contacts to resolve Sarah's email, then chain gmail_send_email.
+step_2 depends on step_1 to get the actual email address.
+</thinking>
+{"nodes":[{"id":"step_1","action":"gmail_search_contacts","agentType":"execution","parameters":{"query":"Sarah","limit":3},"dependencies":[],"metadata":{"recoveryHint":"try broader search or ask user for email if no contacts found"}},{"id":"step_2","action":"gmail_send_email","agentType":"execution","parameters":{"to":["{{step_1.email}}"],"subject":"Q1 Report","body":"Hi Sarah,\n\nI wanted to reach out about the Q1 report.\n\nBest regards"},"dependencies":["step_1"],"metadata":{"recoveryHint":"ask user to confirm email address if multiple contacts returned"}}]}
+
+────────────────────────────────────────────────────────────────────────────────
+
+Example 22 — Morning briefing with Jira + Slack but no channel:
 Input: "give me a morning briefing — check my Jira tickets and any Slack messages"
 <thinking>
 Two intents: jira_search (doable — no channel needed) and slack_read_messages (requires channel).
@@ -490,27 +507,67 @@ export interface PlanResult {
   clarifyQuestion?: string;
 }
 
+/**
+ * Attempt to repair truncated JSON by closing open brackets/braces and strings.
+ * Handles the common case where Bedrock maxTokens cuts the response mid-JSON.
+ */
+function repairTruncatedJSON(json: string): string {
+  let repaired = json;
+  // Close any unterminated string
+  const quoteCount = (repaired.match(/(?<!\\)"/g) ?? []).length;
+  if (quoteCount % 2 !== 0) repaired += '"';
+  // Close open brackets/braces
+  const opens: string[] = [];
+  let inString = false;
+  for (let i = 0; i < repaired.length; i++) {
+    const ch = repaired[i];
+    if (ch === '"' && (i === 0 || repaired[i - 1] !== '\\')) { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{' || ch === '[') opens.push(ch);
+    else if (ch === '}' || ch === ']') opens.pop();
+  }
+  while (opens.length > 0) {
+    const open = opens.pop()!;
+    repaired += open === '{' ? '}' : ']';
+  }
+  return repaired;
+}
+
 export function parsePlanResponse(responseText: string): PlanResult {
   try {
-    const match = responseText.match(/{(?:[^{}]|{(?:[^{}]|{[^}]*})*})*}/);
-    if (!match) throw new Error('No JSON object found in response');
-    const jsonStr = match[0];
+    // Find the start of the JSON object (after </thinking> or just the first '{')
+    const jsonStart = responseText.indexOf('{');
+    if (jsonStart === -1) throw new Error('No JSON object found in response');
+    const rawJson = responseText.slice(jsonStart);
+
+    // First try exact match for well-formed JSON
+    const match = rawJson.match(/{(?:[^{}]|{(?:[^{}]|{[^}]*})*})*}/);
+    const jsonStr = match ? match[0] : rawJson;
+
+    const tryParse = (str: string) => {
+      const parsed = JSON.parse(str);
+      if (parsed.chat === true && parsed.response) {
+        return { type: 'chat' as const, chatResponse: parsed.response };
+      }
+      if (parsed.clarify === true && parsed.question) {
+        return { type: 'clarify' as const, clarifyQuestion: parsed.question };
+      }
+      return { type: 'taskGraph' as const, taskGraph: TaskGraphBuilder.fromJSON(parsed) };
+    };
 
     try {
-      const parsed = JSON.parse(jsonStr);
-
-      if (parsed.chat === true && parsed.response) {
-        return { type: 'chat', chatResponse: parsed.response };
-      }
-
-      if (parsed.clarify === true && parsed.question) {
-        return { type: 'clarify', clarifyQuestion: parsed.question };
-      }
-
-      return { type: 'taskGraph', taskGraph: TaskGraphBuilder.fromJSON(parsed) };
+      return tryParse(jsonStr);
     } catch {
-      console.warn('[planner] Failed to parse Nova plan response:', responseText.slice(0, 500));
-      throw new Error('Failed to parse planner JSON');
+      // JSON was likely truncated by maxTokens — attempt repair
+      console.warn('[planner] JSON parse failed, attempting truncation repair...');
+      try {
+        const repaired = repairTruncatedJSON(rawJson);
+        console.log('[planner] Repaired JSON:', repaired.slice(0, 300));
+        return tryParse(repaired);
+      } catch {
+        console.warn('[planner] Repair also failed. Raw response:', responseText.slice(0, 500));
+        throw new Error('Failed to parse planner JSON');
+      }
     }
   } catch (err) {
     console.warn('[planner] Fallback activated for parse failure:', err);
