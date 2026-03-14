@@ -716,7 +716,19 @@ export class ExecutionAgent extends BaseAgent {
       if (!query) throw new Error('notion_read_page requires either pageId or query');
       const searchResults = await this.notion.search(query);
       if (searchResults.length === 0) return { action: 'notion_read_page', error: `No Notion page found for query: "${query}"`, status: 'not_found' };
-      pageId = searchResults[0].id;
+      // Prefer a page whose title directly contains the query words over a
+      // broad container page — avoids returning the parent "TALOS" page when
+      // the user asked for "TalOS Architecture Overview"
+      const queryLower = query.toLowerCase();
+      const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
+      const scored = searchResults.map(r => {
+        const titleLower = (r.title ?? '').toLowerCase();
+        const wordMatches = queryWords.filter(w => titleLower.includes(w)).length;
+        const exactMatch = titleLower.includes(queryLower) ? 10 : 0;
+        return { r, score: wordMatches + exactMatch };
+      });
+      scored.sort((a, b) => b.score - a.score);
+      pageId = scored[0].r.id;
     }
 
     const result = await this.notion.readPage({ pageId });

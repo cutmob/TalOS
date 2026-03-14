@@ -125,6 +125,30 @@ export class SlackConnector {
     return { fileId: urlData.file_id! };
   }
 
+  // ── users.info ───────────────────────────────────────────────────────────────
+  private async resolveUserId(userId: string): Promise<string> {
+    try {
+      const response = await fetch(`https://slack.com/api/users.info?user=${userId}`, {
+        headers: { 'Authorization': `Bearer ${this.config.botToken}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = await response.json() as { ok: boolean; user?: { profile?: { display_name?: string; real_name?: string } } };
+      if (data.ok && data.user?.profile) {
+        return data.user.profile.display_name || data.user.profile.real_name || userId;
+      }
+    } catch { /* fall through */ }
+    return userId;
+  }
+
+  private async resolveUserMentions(text: string): Promise<string> {
+    const ids = [...new Set(Array.from(text.matchAll(/<@([A-Z0-9]+)>/g), (m) => m[1]))];
+    if (ids.length === 0) return text;
+    const resolved = await Promise.all(ids.map(async (id) => [id, await this.resolveUserId(id)] as [string, string]));
+    let out = text;
+    for (const [id, name] of resolved) out = out.replaceAll(`<@${id}>`, `@${name}`);
+    return out;
+  }
+
   // ── conversations.history ───────────────────────────────────────────────────
   // Scope: channels:history
   async getChannelHistory(params: { channel: string; limit?: number }): Promise<Array<{ text: string; user: string; ts: string }>> {
@@ -139,7 +163,16 @@ export class SlackConnector {
 
     const data = await response.json() as { ok: boolean; messages?: Array<{ text: string; user: string; ts: string }>; error?: string };
     if (!data.ok) throw new Error(`Slack conversations.history error: ${data.error ?? 'unknown'}`);
-    return (data.messages ?? []).map((m) => ({ text: m.text ?? '', user: m.user ?? 'unknown', ts: m.ts }));
+
+    const messages = data.messages ?? [];
+    const resolved = await Promise.all(
+      messages.map(async (m) => ({
+        text: await this.resolveUserMentions(m.text ?? ''),
+        user: await this.resolveUserId(m.user ?? 'unknown'),
+        ts: m.ts,
+      }))
+    );
+    return resolved;
   }
 
   // ── conversations.list ────────────────────────────────────────────────────

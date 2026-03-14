@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -44,6 +45,26 @@ const ACTION_LABELS: Record<string, string> = {
   recover: 'Recovered from error',
 };
 
+const MSG_TRUNC = 42;
+function trunc(text: string): string {
+  return text.length > MSG_TRUNC ? text.slice(0, MSG_TRUNC) + '…' : text;
+}
+
+function stripMd(text: string | undefined): string {
+  if (!text) return '';
+  return text
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`{1,3}[^`]*`{1,3}/gs, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^[-*+]\s+/gm, '')
+    .replace(/^\d+\.\s+/gm, '')
+    .replace(/^>\s+/gm, '')
+    .replace(/\n{2,}/g, ' ')
+    .trim();
+}
+
 function labelAction(action: string | undefined, taskId: string): string {
   if (!action) return taskId.replace(/_/g, ' ');
   return ACTION_LABELS[action] ?? action.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -54,6 +75,7 @@ function labelAction(action: string | undefined, taskId: string): string {
 interface TaskResult {
   taskId: string;
   agentType: string;
+  action?: string;
   status: 'success' | 'failure' | 'retry';
   output: unknown;
   duration: number;
@@ -163,6 +185,90 @@ function pickGreeting(): Pair {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+// ── Voice plasma canvas ───────────────────────────────────────────────────────
+
+function VoicePlasma({ active, size = 180, light = false }: { active: boolean; size?: number; light?: boolean }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef = useRef<number>(0);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d')!;
+    const W = canvas.width, H = canvas.height, cx = W / 2, cy = H / 2;
+    const s = size / 180;
+    let t = 0, opacity = 0;
+
+    // Orbs: orbit radius, angular speed, orb render size, phase, vertical wobble freq
+    const ORBS = [
+      { or: 28, sp: 0.9,  sz: 26, ph: 0,    wy: 0.6  },
+      { or: 22, sp: -0.6, sz: 22, ph: 2.09, wy: 1.1  },
+      { or: 32, sp: 0.4,  sz: 20, ph: 4.19, wy: 0.8  },
+      { or: 16, sp: -1.3, sz: 18, ph: 1.05, wy: 1.4  },
+      { or: 36, sp: 0.7,  sz: 16, ph: 3.14, wy: 0.5  },
+    ];
+
+    // Colors per mode
+    const orbInner = light ? 'rgba(30,30,50,0.30)'   : 'rgba(255,255,255,0.30)';
+    const orbOuter = light ? 'rgba(30,30,50,0)'      : 'rgba(255,255,255,0)';
+    const coreIn   = light ? 'rgba(20,20,40,0.20)'   : 'rgba(255,255,255,0.20)';
+    const coreOut  = light ? 'rgba(20,20,40,0)'      : 'rgba(255,255,255,0)';
+    const blend    = light ? 'multiply' : 'screen';
+
+    function drawOrb(x: number, y: number, r: number, inner: string, outer: string) {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, inner);
+      g.addColorStop(1, outer);
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = g;
+      ctx.fill();
+    }
+
+    function frame() {
+      opacity += active ? 0.05 : -0.07;
+      opacity = Math.max(0, Math.min(1, opacity));
+
+      ctx.clearRect(0, 0, W, H);
+      if (opacity > 0) {
+        ctx.save();
+        ctx.globalAlpha = opacity;
+        ctx.globalCompositeOperation = blend as GlobalCompositeOperation;
+
+        // Static core glow
+        drawOrb(cx, cy, 32 * s, coreIn, coreOut);
+
+        // Orbiting orbs
+        for (const o of ORBS) {
+          const angle = o.sp * t + o.ph;
+          const wobble = Math.sin(o.wy * t + o.ph) * 8 * s;
+          const ox = cx + o.or * s * Math.cos(angle);
+          const oy = cy + o.or * s * Math.sin(angle) + wobble;
+          const sz = o.sz * s * (1 + 0.18 * Math.sin(1.7 * o.sp * t + o.ph));
+          drawOrb(ox, oy, sz, orbInner, orbOuter);
+        }
+
+        ctx.restore();
+      }
+
+      t += 0.018;
+      rafRef.current = requestAnimationFrame(frame);
+    }
+
+    rafRef.current = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [active, size, light]);
+
+  return (
+    <canvas ref={canvasRef} width={size} height={size} style={{
+      position: 'absolute', top: '50%', left: '50%',
+      transform: 'translate(-50%, -50%)',
+      pointerEvents: 'none',
+      filter: `blur(${Math.round(size * 0.072)}px)`,
+    }} />
+  );
+}
+
 // ── Mic SVG icon ──────────────────────────────────────────────────────────────
 
 function MicIcon({ size = 26, color = 'currentColor' }: { size?: number; color?: string }) {
@@ -189,9 +295,11 @@ export default function DashboardPage() {
   const [activeAgents, setActiveAgents] = useState<Set<string>>(new Set());
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const [expandedMsgId, setExpandedMsgId] = useState<string | null>(null);
   const [micState, setMicState] = useState<'idle' | 'connecting' | 'listening'>('idle');
   const [greeting, setGreeting] = useState<Pair>(['', '']);
   const [miniMode, setMiniMode] = useState(false);
+  const [lightMode, setLightMode] = useState(false);
   useEffect(() => { setGreeting(pickGreeting()); }, []);
 
   // Stable session ID for the entire browser session — persists across tasks
@@ -199,7 +307,7 @@ export default function DashboardPage() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const processorRef = useRef<AudioWorkletNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeRef = useRef(0);
@@ -314,6 +422,10 @@ export default function DashboardPage() {
       }));
     };
 
+    // Set true when result event fires — tells finally not to wipe agents
+    // (the result handler's setTimeout handles the flash + clear itself)
+    let resultReceived = false;
+
     try {
       const apiBase = process.env.NEXT_PUBLIC_API_SERVER_URL ?? '';
       const res = await fetch(`${apiBase}/api/tasks/stream`, {
@@ -364,7 +476,7 @@ export default function DashboardPage() {
 
             } else if (phase === 'executing' && nodeId && agentType) {
               // Light up the correct agent dot, add a live step entry
-              setActiveAgents((prev) => new Set([...prev, 'orchestrator', agentType]));
+              setActiveAgents((prev) => new Set([...prev, 'orchestrator', visualAgent(action, agentType)]));
               updateTask({ progressLabel: labelAction(action, nodeId) });
               setTasks((prev) => prev.map((t) => {
                 if (t.id !== taskId) return t;
@@ -383,10 +495,38 @@ export default function DashboardPage() {
 
             } else if (phase === 'node_complete' && nodeId) {
               updatePendingStep(nodeId, { status: status === 'success' ? 'success' : 'failure' });
-              if (agentType) setActiveAgents(new Set(['orchestrator', agentType]));
+              // Recompute active agents: keep orchestrator + any agents that still have running steps
+              setActiveAgents(() => {
+                const current = taskHistoryRef.current.find((tt) => tt.id === taskId);
+                const stillRunning = (current?.pendingSteps ?? []).filter(
+                  (s) => s.nodeId !== nodeId && s.status === 'running'
+                );
+                const next = new Set<string>(['orchestrator']);
+                for (const s of stillRunning) {
+                  next.add(visualAgent(s.action, s.agentType));
+                }
+                // Flash the just-completed agent briefly so the user sees it
+                const completedAgent = visualAgent(action, agentType);
+                next.add(completedAgent);
+                // Remove it after a short flash if nothing else needs it
+                setTimeout(() => {
+                  setActiveAgents((prev) => {
+                    const updated = new Set(prev);
+                    // Only remove if no other running step uses this agent
+                    const latest = taskHistoryRef.current.find((tt) => tt.id === taskId);
+                    const stillActive = (latest?.pendingSteps ?? []).some(
+                      (s) => s.status === 'running' && visualAgent(s.action, s.agentType) === completedAgent
+                    );
+                    if (!stillActive) updated.delete(completedAgent);
+                    return updated;
+                  });
+                }, 600);
+                return next;
+              });
             }
 
           } else if (evtType === 'result') {
+            resultReceived = true;
             const result = parsed as {
               status?: string;
               message?: string;
@@ -399,7 +539,10 @@ export default function DashboardPage() {
 
             setTranscript(summary);
 
-            const agentTypes = new Set<string>((result.results ?? []).map((r) => r.agentType));
+            // Use visualAgent(action, agentType) so reads → research, writes → execution,
+            // and recovery/research agents light up correctly from backend data.
+            const agentTypes = new Set<string>((result.results ?? []).map((r) => visualAgent(r.action as string | undefined, r.agentType as string | undefined)));
+            agentTypes.add('orchestrator');
             if (agentTypes.size > 0) {
               setActiveAgents(agentTypes);
               setTimeout(() => setActiveAgents(new Set()), 1500);
@@ -440,7 +583,10 @@ export default function DashboardPage() {
       });
     } finally {
       activeRef.current -= 1;
-      if (activeRef.current === 0) setActiveAgents(new Set());
+      // Don't wipe agents here if a result was received — the result handler's
+      // setTimeout(clear, 1500) owns the flash. Without this guard, finally runs
+      // immediately after the stream closes and kills the dots before they flash.
+      if (activeRef.current === 0 && !resultReceived) setActiveAgents(new Set());
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [command]);
@@ -501,11 +647,10 @@ export default function DashboardPage() {
 
           // Light up agent status dots based on which agents actually ran
           if (result?.results && result.results.length > 0) {
-            const types = new Set<string>(result.results.map((r) => r.agentType));
-            if (types.size > 0) {
-              setActiveAgents(types);
-              setTimeout(() => setActiveAgents(new Set()), 1500);
-            }
+            const types = new Set<string>(result.results.map((r) => visualAgent(r.action as string | undefined, r.agentType)));
+            types.add('orchestrator');
+            setActiveAgents(types);
+            setTimeout(() => setActiveAgents(new Set()), 1500);
           }
 
           // Mirror voice commands into the same task history as typed commands
@@ -543,22 +688,23 @@ export default function DashboardPage() {
         audio: { channelCount: 1, sampleRate: { ideal: 16000 } },
       });
       streamRef.current = stream;
-      const ctx = new AudioContext();
+      const ctx = new AudioContext({ sampleRate: 16000 });
       audioCtxRef.current = ctx;
       const srcRate = ctx.sampleRate;
+      await ctx.audioWorklet.addModule('/pcm-processor.js');
       const source = ctx.createMediaStreamSource(stream);
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
+      const worklet = new AudioWorkletNode(ctx, 'pcm-processor');
+      processorRef.current = worklet;
       setMicState('connecting');
       const ws = connectVoiceWS();
-      processor.onaudioprocess = (e) => {
+      worklet.port.onmessage = (e) => {
         if (ws.readyState !== WebSocket.OPEN) return;
-        const raw = e.inputBuffer.getChannelData(0);
+        const raw = e.data as Float32Array;
         const pcm = floatToPCM16(resampleTo16k(raw, srcRate));
         ws.send(JSON.stringify({ type: 'audio', audio: toBase64(pcm.buffer as ArrayBuffer) }));
       };
-      source.connect(processor);
-      processor.connect(ctx.destination);
+      source.connect(worklet);
+      worklet.connect(ctx.destination);
       // micState transitions to 'listening' when Bedrock sends 'ready'
     } catch {
       alert('Microphone access denied. Please allow mic permissions and try again.');
@@ -584,6 +730,23 @@ export default function DashboardPage() {
   }, []);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+
+  // Map backend agentType + action to the correct visual agent dot.
+  // If the backend explicitly says 'research' or 'recovery', trust that.
+  // For 'execution' nodes, visually distinguish reads (research) from writes (execution).
+  const visualAgent = (action: string | undefined, backendAgent?: string): string => {
+    if (backendAgent && backendAgent !== 'execution' && backendAgent !== 'orchestrator') {
+      return backendAgent; // trust backend for research, recovery, etc.
+    }
+    if (!action) return backendAgent || 'execution';
+    const reads = [
+      'jira_search', 'gmail_search', 'gmail_read_email',
+      'slack_read_messages', 'slack_list_channels',
+      'hubspot_search_contacts', 'hubspot_search_deals', 'hubspot_search_objects',
+      'hubspot_list_properties', 'notion_search', 'notion_read_page', 'knowledge_search',
+    ];
+    return reads.includes(action) ? 'research' : backendAgent || 'execution';
+  };
 
   const fmtMs = (ms?: number) =>
     ms == null ? '' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
@@ -617,13 +780,236 @@ export default function DashboardPage() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // True light-mode palette — no CSS filter trickery, proper colors throughout
+  const t = lightMode ? {
+    // Backgrounds
+    bg:          '#f2f2f2',
+    bgPanel:     '#ffffff',
+    bgMini:      'rgba(245,245,245,0.96)',
+    // Text
+    text1:       '#111111',   // primary / greeting line 1
+    text2:       '#c0c0c0',   // greeting line 2 / muted
+    text3:       '#888888',   // secondary labels
+    textFaint:   '#d8d8d8',   // very faint (metrics, placeholder ghost)
+    // Borders
+    border1:     '#e2e2e2',
+    border2:     '#d0d0d0',
+    // Agent dots
+    dotOff:      '#dddddd',   // inactive — barely visible on light bg
+    dotTextOff:  '#d0d0d0',
+    dotOn:       '#111111',   // active — bold dark
+    dotGlow:     '#11111130',
+    dotTextOn:   '#111111',
+    // Logo
+    logoRing1:   '#aaaaaa',
+    logoRing2:   '#cccccc',
+    logoCore:    '#777777',
+    logoTal:     '#111111',
+    logoOS:      '#aaaaaa',
+    // Mic
+    micBorderIdle:      '#cccccc',
+    micBorderActive:    '#777777',
+    micBorderConnecting:'#e0e0e0',
+    micBorderProcess:   '#cccccc80',
+    micColor:           '#888888',
+    micColorActive:     '#333333',
+    // Transcript
+    transcriptText:  '#555555',
+    mdStrong:        '#111111',
+    mdHeading:       '#222222',
+    mdCode:          '#f0f0f0',
+    mdCodeText:      '#333333',
+    // Input
+    inputBorder:  '#e0e0e0',
+    inputText:    '#444444',
+    inputCaret:   '#666666',
+    // Tasks
+    taskTextRun:     '#111111',
+    taskTextDone:    '#999999',
+    taskBorderRun:   '#aaaaaa',
+    taskBorderDone:  '#dddddd',
+    taskBorderFail:  '#f0cccc',
+    taskStepFail:    '#cc8888',
+    taskMsg:         '#777777',
+    // Panel
+    panelBg:         '#fafafa',
+    panelBorder:     '#e8e8e8',
+    panelLabel:      '#bbbbbb',
+    panelClear:      '#bbbbbb',
+    // Chevron / controls
+    chevron:     '#bbbbbb',
+    iconBtn:     '#cccccc',
+    // Video
+    videoOpacity: 0.07,
+    videoBlend:   'multiply' as const,
+  } : {
+    bg:          'transparent',
+    bgPanel:     '#0a0a0a',
+    bgMini:      'rgba(8,8,8,0.92)',
+    text1:       '#e8e8e8',
+    text2:       '#383838',
+    text3:       '#555555',
+    textFaint:   '#2a2a2a',
+    border1:     '#1a1a1a',
+    border2:     '#1e1e1e',
+    dotOff:      '#1e1e1e',
+    dotTextOff:  '#2a2a2a',
+    dotOn:       '#909090',
+    dotGlow:     '#90909060',
+    dotTextOn:   '#909090',
+    logoRing1:   '#606060',
+    logoRing2:   '#404040',
+    logoCore:    '#808080',
+    logoTal:     '#e8e8e8',
+    logoOS:      '#707070',
+    micBorderIdle:      '#222222',
+    micBorderActive:    '#555555',
+    micBorderConnecting:'#2a2a2a',
+    micBorderProcess:   '#55555580',
+    micColor:           '#555555',
+    micColorActive:     '#aaaaaa',
+    transcriptText:  '#a0a0a0',
+    mdStrong:        '#e0e0e0',
+    mdHeading:       '#e0e0e0',
+    mdCode:          '#1a1a1a',
+    mdCodeText:      'inherit',
+    inputBorder:  '#1a1a1a',
+    inputText:    '#888888',
+    inputCaret:   '#888888',
+    taskTextRun:     '#e8e8e8',
+    taskTextDone:    '#555555',
+    taskBorderRun:   '#666666',
+    taskBorderDone:  '#3a3a3a',
+    taskBorderFail:  '#3a1a1a',
+    taskStepFail:    '#6a3a3a',
+    taskMsg:         '#606060',
+    panelBg:         '#0a0a0a',
+    panelBorder:     '#1a1a1a',
+    panelLabel:      '#333333',
+    panelClear:      '#333333',
+    chevron:     '#333333',
+    iconBtn:     '#282828',
+    videoOpacity: 0.04,
+    videoBlend:   'normal' as const,
+  };
+
   return (
     <div style={{
       minHeight: '100vh',
       display: 'flex',
       flexDirection: 'column',
       fontWeight: 300,
+      background: t.bg,
+      color: t.text1,
+      transition: 'background 0.3s, color 0.3s',
     }}>
+      <style>{`
+        .md-scroll::-webkit-scrollbar { display: none; }
+        @keyframes expandRing {
+          0%   { transform: scale(1);   opacity: 0.5; }
+          100% { transform: scale(2.8); opacity: 0;   }
+        }
+        @keyframes processRing {
+          0%, 100% { opacity: 0.15; transform: scale(1);    }
+          50%       { opacity: 0.35; transform: scale(1.12); }
+        }
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50%       { opacity: 0; }
+        }
+        @keyframes spin {
+          0%   { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        .task-spinner {
+          display: inline-block;
+          width: 10px; height: 10px;
+          border: 1.5px solid #333;
+          border-top-color: #888;
+          border-radius: 50%;
+          animation: spin 0.7s linear infinite;
+        }
+        /* Liquid glass mic button */
+        .mic-btn {
+          backdrop-filter: blur(16px) saturate(160%) brightness(1.04);
+          -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.04);
+        }
+        .mic-throbber {
+          display: inline-block;
+          width: 18px; height: 18px;
+          border-radius: 50%;
+          border: 1.5px solid #2a2a2a;
+          border-top-color: #555;
+          animation: spin 0.9s linear infinite;
+        }
+        /* Liquid mist rings — morph in place, no outward wave */
+        @keyframes mistA {
+          0%   { opacity: 0.5;  transform: scale(1.02); }
+          28%  { opacity: 0.78; transform: scale(1.05); }
+          62%  { opacity: 0.22; transform: scale(1.01); }
+          100% { opacity: 0.5;  transform: scale(1.02); }
+        }
+        @keyframes mistB {
+          0%   { opacity: 0.22; transform: scale(1.12); }
+          40%  { opacity: 0.5;  transform: scale(1.16); }
+          100% { opacity: 0.22; transform: scale(1.12); }
+        }
+        @keyframes mistC {
+          0%   { opacity: 0.1;  transform: scale(1.26); }
+          50%  { opacity: 0.26; transform: scale(1.3);  }
+          100% { opacity: 0.1;  transform: scale(1.26); }
+        }
+        @keyframes processMist {
+          0%, 100% { opacity: 0.18; transform: scale(1.08); }
+          50%       { opacity: 0.36; transform: scale(1.12); }
+        }
+        .mist-ring {
+          position: absolute;
+          width: 72px; height: 72px;
+          border-radius: 50%;
+          border-width: 1px;
+          border-style: solid;
+          pointer-events: none;
+          filter: url(#liquid-filter);
+        }
+        .mist-ring-a { animation: mistA 3.2s ease-in-out infinite; }
+        .mist-ring-b { animation: mistB 4.5s ease-in-out infinite 0.7s; }
+        .mist-ring-c { animation: mistC 5.8s ease-in-out infinite 1.4s; }
+        .process-mist {
+          position: absolute;
+          width: 90px; height: 90px;
+          border-radius: 50%;
+          border: 1px solid;
+          animation: processMist 2.2s ease-in-out infinite;
+          pointer-events: none;
+          filter: url(#liquid-filter);
+        }
+        @keyframes greetFade {
+          0%   { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        .greeting-line {
+          opacity: 0;
+          animation: greetFade 0.6s ease-out forwards;
+        }
+        @keyframes slideUp {
+          0%   { transform: translateY(100%); }
+          100% { transform: translateY(0); }
+        }
+      `}</style>
+
+      {/* ── SVG liquid filter (referenced by mist rings) ── */}
+      <svg style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden' }} aria-hidden="true">
+        <defs>
+          <filter id="liquid-filter" x="-30%" y="-30%" width="160%" height="160%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="3" seed="4" result="noise">
+              <animate attributeName="baseFrequency" values="0.014;0.022;0.016;0.014" dur="7s" repeatCount="indefinite" />
+              <animate attributeName="seed" values="4;11;7;4" dur="14s" repeatCount="indefinite" />
+            </feTurbulence>
+            <feDisplacementMap in="SourceGraphic" in2="noise" scale="5" xChannelSelector="R" yChannelSelector="G" />
+          </filter>
+        </defs>
+      </svg>
 
       {/* ── Background video ── */}
       <video
@@ -637,9 +1023,11 @@ export default function DashboardPage() {
           top: 0, left: 0,
           width: '100%', height: '100%',
           objectFit: 'cover',
-          opacity: 0.04,
+          opacity: t.videoOpacity,
+          mixBlendMode: t.videoBlend,
           zIndex: 0,
           pointerEvents: 'none',
+          transition: 'opacity 0.4s',
         }}
       >
         <source src="/bg.mp4" type="video/mp4" />
@@ -656,14 +1044,33 @@ export default function DashboardPage() {
         alignItems: 'center',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          {/* Logo mark — orbital rings */}
-          <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <ellipse cx="11" cy="11" rx="9.5" ry="4" stroke="#606060" strokeWidth="1" fill="none" transform="rotate(-35 11 11)" />
-            <ellipse cx="11" cy="11" rx="9.5" ry="4" stroke="#404040" strokeWidth="1" fill="none" transform="rotate(35 11 11)" />
-            <circle cx="11" cy="11" r="1.5" fill="#808080" />
-          </svg>
-          <span style={{ fontSize: '1.05rem', fontWeight: 600, letterSpacing: '0.04em', color: '#e8e8e8' }}>
-            Tal<span style={{ color: '#707070' }}>OS</span>
+          {/* Logo mark — precision gear */}
+          {(() => {
+            const cx = 12, cy = 12, ro = 10, ri = 7.4, teeth = 10;
+            const step = (Math.PI * 2) / teeth;
+            const hw = step * 0.26;
+            let d = '';
+            for (let i = 0; i < teeth; i++) {
+              const base = i * step - Math.PI / 2;
+              const a1 = base - hw, a2 = base + hw;
+              const a3 = base + step - hw;
+              const x1 = cx + ro * Math.cos(a1), y1 = cy + ro * Math.sin(a1);
+              const x2 = cx + ro * Math.cos(a2), y2 = cy + ro * Math.sin(a2);
+              const x3 = cx + ri * Math.cos(a2), y3 = cy + ri * Math.sin(a2);
+              const x4 = cx + ri * Math.cos(a3), y4 = cy + ri * Math.sin(a3);
+              d += `${i === 0 ? 'M' : 'L'}${x1.toFixed(2)} ${y1.toFixed(2)} L${x2.toFixed(2)} ${y2.toFixed(2)} L${x3.toFixed(2)} ${y3.toFixed(2)} L${x4.toFixed(2)} ${y4.toFixed(2)} `;
+            }
+            d += 'Z';
+            return (
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d={d} fill={t.logoCore} stroke={t.logoRing1} strokeWidth="0.5" strokeLinejoin="round" />
+                <circle cx={cx} cy={cy} r="4.2" fill="none" stroke={t.logoRing2} strokeWidth="1.2" />
+                <circle cx={cx} cy={cy} r="1.4" fill={t.logoRing1} />
+              </svg>
+            );
+          })()}
+          <span style={{ fontSize: '1.05rem', fontWeight: 600, letterSpacing: '0.04em', color: t.logoTal }}>
+            Tal<span style={{ color: t.logoOS }}>OS</span>
           </span>
         </div>
 
@@ -674,39 +1081,69 @@ export default function DashboardPage() {
             return (
               <span key={name} title={name} style={{
                 display: 'flex', alignItems: 'center', gap: '0.3rem',
-                fontSize: '0.65rem', color: on ? '#909090' : '#2a2a2a',
+                fontSize: '0.65rem', color: on ? t.dotTextOn : t.dotTextOff,
                 transition: 'color 0.3s',
                 textTransform: 'uppercase', letterSpacing: '0.06em',
               }}>
                 <span style={{
                   width: 5, height: 5, borderRadius: '50%',
-                  background: on ? '#909090' : '#1e1e1e',
+                  background: on ? t.dotOn : t.dotOff,
                   display: 'inline-block',
                   transition: 'background 0.3s',
-                  boxShadow: on ? '0 0 6px #90909060' : 'none',
+                  boxShadow: on ? `0 0 6px ${t.dotGlow}` : 'none',
                 }} />
                 {name}
               </span>
             );
           })}
           {metrics && metrics.totalTasks > 0 && (
-            <span style={{ fontSize: '0.65rem', color: '#2a2a2a', marginLeft: '0.75rem', letterSpacing: '0.04em' }}>
+            <span style={{ fontSize: '0.65rem', color: t.textFaint, marginLeft: '0.75rem', letterSpacing: '0.04em' }}>
               {metrics.totalTasks} tasks · {Math.round(metrics.successRate * 100)}%
             </span>
           )}
+          {/* Light mode toggle */}
+          <button
+            onClick={() => setLightMode((v) => !v)}
+            aria-label="Toggle light mode"
+            title="Toggle light mode"
+            style={{
+              background: 'transparent', border: 'none',
+              color: t.iconBtn,
+              cursor: 'pointer', padding: '4px', outline: 'none',
+              display: 'flex', alignItems: 'center', marginLeft: '0.25rem',
+              transition: 'color 0.2s',
+            }}
+          >
+            {lightMode ? (
+              /* moon */
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            ) : (
+              /* sun */
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5" />
+                <line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" />
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                <line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" />
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+              </svg>
+            )}
+          </button>
           {/* Mini mode toggle */}
           <button
             onClick={() => setMiniMode(true)}
             aria-label="Compact mode"
             title="Compact mode"
             style={{
-              background: 'transparent', border: 'none', color: '#282828',
+              background: 'transparent', border: 'none', color: t.iconBtn,
               cursor: 'pointer', padding: '4px', outline: 'none',
-              display: 'flex', alignItems: 'center', marginLeft: '0.5rem',
+              display: 'flex', alignItems: 'center', marginLeft: '0.25rem',
               transition: 'color 0.2s',
             }}
           >
-            {/* compress / minimize icon */}
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
               stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" />
@@ -732,7 +1169,7 @@ export default function DashboardPage() {
         <div style={{ lineHeight: 1.25, userSelect: 'none' }}>
           <p className="greeting-line" style={{
             fontSize: 'clamp(1.8rem, 5vw, 2.8rem)', fontWeight: 300, margin: 0,
-            letterSpacing: '-0.02em', color: '#e8e8e8',
+            letterSpacing: '-0.02em', color: t.text1,
             animationDelay: '0.1s',
           }}>
             {greeting[0]}
@@ -740,7 +1177,7 @@ export default function DashboardPage() {
           {greeting[1] && (
             <p className="greeting-line" style={{
               fontSize: 'clamp(1.8rem, 5vw, 2.8rem)', fontWeight: 300, margin: 0,
-              letterSpacing: '-0.02em', color: '#383838',
+              letterSpacing: '-0.02em', color: t.text2,
               animationDelay: '0.35s',
             }}>
               {greeting[1]}
@@ -750,32 +1187,41 @@ export default function DashboardPage() {
 
         {/* Mic button */}
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {/* Single subtle ring when actively listening */}
-          {micState === 'listening' && (
-            <span className="mic-ring" />
-          )}
-          {/* Processing pulse ring */}
+          <VoicePlasma active={micState === 'listening'} light={lightMode} />
           {isProcessing && micState === 'idle' && (
-            <span className="process-ring" />
+            <span className="process-mist" style={{ borderColor: t.micBorderProcess }} />
           )}
           <button
             onClick={() => micState !== 'idle' ? stopListening() : startListening()}
             aria-label={micState !== 'idle' ? 'Stop listening' : 'Start voice command'}
             disabled={micState === 'connecting'}
+            className="mic-btn"
             style={{
               position: 'relative', zIndex: 1,
               width: 72, height: 72,
               borderRadius: '50%',
-              background: 'transparent',
-              border: `1.5px solid ${micState === 'listening' ? '#555' : micState === 'connecting' ? '#2a2a2a' : isProcessing ? '#55555580' : '#222'}`,
-              color: micState === 'listening' ? '#aaa' : '#555',
+              background: lightMode
+                ? micState === 'listening'
+                  ? 'rgba(255,255,255,0.65)'
+                  : 'rgba(255,255,255,0.45)'
+                : micState === 'listening'
+                  ? 'rgba(255,255,255,0.06)'
+                  : 'rgba(255,255,255,0.03)',
+              border: `1.5px solid ${micState === 'listening' ? t.micBorderActive : micState === 'connecting' ? t.micBorderConnecting : isProcessing ? t.micBorderProcess : t.micBorderIdle}`,
+              color: micState === 'listening' ? t.micColorActive : t.micColor,
               cursor: micState === 'connecting' ? 'default' : 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'border-color 0.4s, color 0.4s',
+              transition: 'background 0.4s, border-color 0.4s, color 0.4s, box-shadow 0.4s',
               outline: 'none',
+              boxShadow: lightMode
+                ? micState === 'listening'
+                  ? 'inset 0 1.5px 0 rgba(255,255,255,0.95), inset 0 -1px 0 rgba(0,0,0,0.06), 0 6px 24px rgba(0,0,0,0.1)'
+                  : 'inset 0 1.5px 0 rgba(255,255,255,0.8), inset 0 -1px 0 rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.07)'
+                : micState === 'listening'
+                  ? 'inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 0 rgba(0,0,0,0.25), 0 8px 32px rgba(0,0,0,0.35)'
+                  : 'inset 0 1px 0 rgba(255,255,255,0.1), inset 0 -1px 0 rgba(0,0,0,0.2), 0 4px 20px rgba(0,0,0,0.25)',
             }}
           >
-            {/* Fade between mic icon and connecting throbber */}
             <span style={{
               position: 'absolute',
               opacity: micState === 'connecting' ? 0 : 1,
@@ -795,16 +1241,32 @@ export default function DashboardPage() {
           </button>
         </div>
 
-        {/* Live transcript */}
+        {/* Live transcript — rendered as markdown, scrollable for long responses */}
         {transcript ? (
-          <p style={{
-            fontSize: '1rem', fontWeight: 300, color: '#a0a0a0',
-            margin: 0, letterSpacing: '-0.01em',
-            minHeight: '1.5rem', maxWidth: 480,
-          }}>
-            {transcript}
+          <div style={{
+            fontSize: '1rem', fontWeight: 300, color: t.transcriptText,
+            letterSpacing: '-0.01em', lineHeight: 1.6,
+            maxWidth: 560, width: '100%',
+            maxHeight: '40vh', overflowY: 'auto',
+            padding: '0.5rem 0.75rem',
+            scrollbarWidth: 'none',
+          }} className="md-scroll">
+            <ReactMarkdown
+              components={{
+                p: ({ children }) => <p style={{ margin: '0.25rem 0' }}>{children}</p>,
+                strong: ({ children }) => <strong style={{ color: t.mdStrong, fontWeight: 500 }}>{children}</strong>,
+                ul: ({ children }) => <ul style={{ textAlign: 'left', paddingLeft: '1.2rem', margin: '0.25rem 0' }}>{children}</ul>,
+                ol: ({ children }) => <ol style={{ textAlign: 'left', paddingLeft: '1.2rem', margin: '0.25rem 0' }}>{children}</ol>,
+                li: ({ children }) => <li style={{ margin: '0.15rem 0' }}>{children}</li>,
+                h1: ({ children }) => <h1 style={{ color: t.mdHeading, fontSize: '1.1rem', fontWeight: 500, margin: '0.5rem 0 0.25rem' }}>{children}</h1>,
+                h2: ({ children }) => <h2 style={{ color: t.mdHeading, fontSize: '1rem', fontWeight: 500, margin: '0.4rem 0 0.2rem' }}>{children}</h2>,
+                h3: ({ children }) => <h3 style={{ color: t.mdHeading, fontSize: '0.95rem', fontWeight: 500, margin: '0.3rem 0 0.15rem' }}>{children}</h3>,
+                a: ({ children }) => <span style={{ color: t.transcriptText, textDecoration: 'underline' }}>{children}</span>,
+                code: ({ children }) => <code style={{ background: t.mdCode, color: t.mdCodeText, padding: '0.1rem 0.3rem', borderRadius: 3, fontSize: '0.85rem' }}>{children}</code>,
+              }}
+            >{transcript}</ReactMarkdown>
             <span style={{ opacity: 0.5, animation: 'blink 1s step-end infinite' }}>▮</span>
-          </p>
+          </div>
         ) : (
           <p style={{ minHeight: '1.5rem', margin: 0 }} />
         )}
@@ -817,7 +1279,7 @@ export default function DashboardPage() {
             onChange={(e) => {
               setCommand(e.target.value);
               e.target.style.height = 'auto';
-              const maxPx = 144; // ~6 lines
+              const maxPx = 144;
               if (e.target.scrollHeight > maxPx) {
                 e.target.style.height = maxPx + 'px';
                 e.target.style.overflowY = 'auto';
@@ -830,8 +1292,8 @@ export default function DashboardPage() {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 submitCommand();
-                const t = e.target as HTMLTextAreaElement;
-                t.style.height = 'auto';
+                const ta = e.target as HTMLTextAreaElement;
+                ta.style.height = 'auto';
               }
             }}
             placeholder="or type a command..."
@@ -839,16 +1301,16 @@ export default function DashboardPage() {
               width: '100%',
               background: 'transparent',
               border: 'none',
-              borderBottom: '1px solid #1a1a1a',
+              borderBottom: `1px solid ${t.inputBorder}`,
               outline: 'none',
-              color: '#888',
+              color: t.inputText,
               fontSize: '0.9rem',
               fontWeight: 300,
               fontFamily: 'inherit',
               padding: '0.5rem 0',
               textAlign: 'center',
               letterSpacing: '-0.01em',
-              caretColor: '#888',
+              caretColor: t.inputCaret,
               boxSizing: 'border-box',
               resize: 'none',
               overflow: 'hidden',
@@ -865,17 +1327,16 @@ export default function DashboardPage() {
           position: 'fixed', bottom: 32, left: '50%', transform: 'translateX(-50%)',
           zIndex: 100,
           display: 'flex', alignItems: 'center', gap: '0.75rem',
-          background: 'rgba(8,8,8,0.92)',
-          border: '1px solid #1e1e1e',
+          background: t.bgMini,
+          border: `1px solid ${t.border2}`,
           borderRadius: 40,
           padding: '10px 18px 10px 14px',
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',
-          boxShadow: '0 4px 32px rgba(0,0,0,0.6)',
+          boxShadow: lightMode ? '0 4px 32px rgba(0,0,0,0.08)' : '0 4px 32px rgba(0,0,0,0.6)',
           minWidth: 260, maxWidth: 400,
           userSelect: 'none',
         }}>
-          {/* Mic button — compact */}
           <button
             onClick={() => micState !== 'idle' ? stopListening() : startListening()}
             aria-label={micState !== 'idle' ? 'Stop listening' : 'Start voice command'}
@@ -884,22 +1345,15 @@ export default function DashboardPage() {
               flexShrink: 0,
               width: 36, height: 36, borderRadius: '50%',
               background: 'transparent',
-              border: `1.5px solid ${micState === 'listening' ? '#555' : micState === 'connecting' ? '#2a2a2a' : '#2a2a2a'}`,
-              color: micState === 'listening' ? '#aaa' : '#555',
+              border: `1.5px solid ${micState === 'listening' ? t.micBorderActive : t.micBorderConnecting}`,
+              color: micState === 'listening' ? t.micColorActive : t.micColor,
               cursor: micState === 'connecting' ? 'default' : 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'border-color 0.4s, color 0.4s',
               outline: 'none', position: 'relative',
             }}
           >
-            {micState === 'listening' && (
-              <span style={{
-                position: 'absolute', width: 36, height: 36, borderRadius: '50%',
-                border: '1px solid #444',
-                animation: 'expandRing 2.4s ease-out infinite',
-                pointerEvents: 'none',
-              }} />
-            )}
+            <VoicePlasma active={micState === 'listening'} size={90} light={lightMode} />
             <span style={{ opacity: micState === 'connecting' ? 0 : 1, transition: 'opacity 0.35s', display: 'flex' }}>
               <MicIcon size={14} />
             </span>
@@ -908,36 +1362,33 @@ export default function DashboardPage() {
             </span>
           </button>
 
-          {/* Status / transcript text */}
           <span style={{
             flex: 1, minWidth: 0,
-            fontSize: '0.72rem', fontWeight: 300, color: transcript ? '#909090' : '#2e2e2e',
+            fontSize: '0.72rem', fontWeight: 300, color: transcript ? t.text3 : t.textFaint,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             letterSpacing: '-0.01em',
           }}>
             {transcript
               ? transcript
               : isProcessing
-                ? tasks.find((t) => t.status === 'running')?.command ?? 'processing…'
+                ? tasks.find((t2) => t2.status === 'running')?.command ?? 'processing…'
                 : 'TalOS'}
           </span>
 
-          {/* Agent activity dot */}
           {isProcessing && (
             <span style={{
               width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
-              background: '#606060', boxShadow: '0 0 6px #60606060',
+              background: t.dotOn, boxShadow: `0 0 6px ${t.dotGlow}`,
             }} />
           )}
 
-          {/* Expand button */}
           <button
             onClick={() => setMiniMode(false)}
             aria-label="Expand dashboard"
             title="Expand"
             style={{
               flexShrink: 0, background: 'transparent', border: 'none',
-              color: '#2a2a2a', cursor: 'pointer', padding: '2px',
+              color: t.iconBtn, cursor: 'pointer', padding: '2px',
               outline: 'none', display: 'flex', alignItems: 'center',
               transition: 'color 0.2s',
             }}
@@ -961,19 +1412,20 @@ export default function DashboardPage() {
             const fading = task.completedAt && Date.now() - task.completedAt > 4000;
             const isChat = task.status !== 'running' && (!task.results || task.results.length === 0) && !!task.message;
             const isExpanded = expandedTaskId === task.id;
+            const taskBorder = task.status === 'completed' ? t.taskBorderDone : task.status === 'running' ? t.taskBorderRun : t.taskBorderFail;
             return (
               <div key={task.id} style={{
                 padding: '0.5rem 0.75rem',
-                borderLeft: `1.5px solid ${task.status === 'completed' ? '#3a3a3a' : task.status === 'running' ? '#666' : '#3a1a1a'}`,
+                borderLeft: `1.5px solid ${taskBorder}`,
                 opacity: fading ? 0 : 1,
                 transition: 'opacity 2s ease-out',
                 marginBottom: '0.5rem',
-                cursor: task.status !== 'running' && !isChat ? 'pointer' : 'default',
-              }} onClick={() => task.status !== 'running' && !isChat && setExpandedTaskId(isExpanded ? null : task.id)}>
+                cursor: task.status !== 'running' ? 'pointer' : 'default',
+              }} onClick={() => task.status !== 'running' && setExpandedTaskId(isExpanded ? null : task.id)}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
                   <span style={{
                     fontSize: '0.8rem', fontWeight: 300,
-                    color: task.status === 'running' ? '#e8e8e8' : '#555',
+                    color: task.status === 'running' ? t.taskTextRun : t.taskTextDone,
                     flex: 1, minWidth: 0,
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}>
@@ -981,7 +1433,7 @@ export default function DashboardPage() {
                   </span>
                   <span style={{
                     fontSize: '0.65rem', fontWeight: 400, flexShrink: 0,
-                    color: task.status === 'completed' ? '#707070' : task.status === 'running' ? '#a0a0a0' : '#5a3a3a',
+                    color: task.status === 'completed' ? t.taskTextDone : task.status === 'running' ? t.text3 : t.taskStepFail,
                     display: 'flex', alignItems: 'center', gap: '0.35rem',
                   }}>
                     {task.status === 'running' ? (
@@ -1002,13 +1454,18 @@ export default function DashboardPage() {
                       </>
                     )}
                   </span>
+                  {task.status !== 'running' && (
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                      style={{ color: t.taskTextDone, opacity: 0.5, flexShrink: 0, transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  )}
                 </div>
                 {isChat && (
-                  <p style={{ fontSize: '0.72rem', fontWeight: 300, color: '#606060', margin: '0.3rem 0 0', lineHeight: 1.5 }}>
-                    {task.message}
+                  <p style={{ fontSize: '0.72rem', fontWeight: 300, color: t.taskMsg, margin: '0.3rem 0 0', lineHeight: 1.5 }}>
+                    {isExpanded ? stripMd(task.message) : trunc(stripMd(task.message))}
                   </p>
                 )}
-                {/* Live steps during execution */}
                 {task.status === 'running' && task.pendingSteps && task.pendingSteps.length > 0 && (
                   <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                     {task.pendingSteps.map((s) => (
@@ -1024,7 +1481,7 @@ export default function DashboardPage() {
                             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                           </svg>
                         )}
-                        <span style={{ fontSize: '0.7rem', fontWeight: 300, color: s.status === 'failure' ? '#6a3a3a' : '#505050', lineHeight: 1.4 }}>
+                        <span style={{ fontSize: '0.7rem', fontWeight: 300, color: s.status === 'failure' ? t.taskStepFail : t.taskTextDone, lineHeight: 1.4 }}>
                           {labelAction(s.action, s.nodeId)}
                         </span>
                       </div>
@@ -1044,7 +1501,7 @@ export default function DashboardPage() {
                             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                           </svg>
                         )}
-                        <span style={{ fontSize: '0.7rem', fontWeight: 300, color: r.status === 'success' ? '#505050' : '#6a3a3a', lineHeight: 1.4 }}>
+                        <span style={{ fontSize: '0.7rem', fontWeight: 300, color: r.status === 'success' ? t.taskTextDone : t.taskStepFail, lineHeight: 1.4 }}>
                           {labelAction((r.output as Record<string, unknown>)?.action as string, r.taskId)}
                           {r.error ? ` — ${r.error}` : ''}
                         </span>
@@ -1052,11 +1509,25 @@ export default function DashboardPage() {
                     ))}
                   </div>
                 )}
-                {isExpanded && task.message && !isChat && (
-                  <p style={{ fontSize: '0.72rem', fontWeight: 300, color: '#606060', margin: '0.3rem 0 0', lineHeight: 1.5 }}>
-                    {task.message}
-                  </p>
-                )}
+                {isExpanded && task.message && !isChat && (() => {
+                  const msgExpanded = expandedMsgId === task.id;
+                  const stripped = stripMd(task.message);
+                  const needsExpand = stripped.length > MSG_TRUNC;
+                  return (
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.25rem', marginTop: '0.3rem', cursor: needsExpand ? 'pointer' : 'default' }}
+                      onClick={(e) => { if (needsExpand) { e.stopPropagation(); setExpandedMsgId(msgExpanded ? null : task.id); } }}>
+                      <p style={{ fontSize: '0.72rem', fontWeight: 300, color: t.taskMsg, margin: 0, lineHeight: 1.5, flex: 1 }}>
+                        {msgExpanded ? stripped : trunc(stripped)}
+                      </p>
+                      {needsExpand && (
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                          style={{ color: t.taskMsg, opacity: 0.5, flexShrink: 0, marginTop: 3, transform: msgExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>
+                          <polyline points="6 9 12 15 18 9" />
+                        </svg>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}
@@ -1071,7 +1542,7 @@ export default function DashboardPage() {
           style={{
             position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)',
             zIndex: 20, background: 'transparent', border: 'none',
-            color: '#333', cursor: 'pointer', padding: '4px 12px',
+            color: t.chevron, cursor: 'pointer', padding: '4px 12px',
             outline: 'none', transition: 'color 0.3s',
           }}
         >
@@ -1088,14 +1559,14 @@ export default function DashboardPage() {
         <div style={{
           position: 'fixed', bottom: 0, left: 0, right: 0,
           zIndex: 15, maxHeight: '40vh', overflowY: 'auto',
-          background: '#0a0a0a', borderTop: '1px solid #1a1a1a',
+          background: t.panelBg, borderTop: `1px solid ${t.panelBorder}`,
           padding: '1.5rem 2rem 2.5rem',
           animation: 'slideUp 0.25s ease-out',
         }}>
           <div style={{ maxWidth: 560, margin: '0 auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
               <p style={{
-                fontSize: '0.6rem', fontWeight: 600, color: '#333',
+                fontSize: '0.6rem', fontWeight: 600, color: t.panelLabel,
                 textTransform: 'uppercase', letterSpacing: '0.1em', margin: 0,
               }}>
                 Task History
@@ -1103,7 +1574,7 @@ export default function DashboardPage() {
               <button
                 onClick={() => { setTasks([]); setTaskPanelOpen(false); }}
                 style={{
-                  background: 'transparent', border: 'none', color: '#333',
+                  background: 'transparent', border: 'none', color: t.panelClear,
                   fontSize: '0.6rem', cursor: 'pointer', textTransform: 'uppercase',
                   letterSpacing: '0.08em', outline: 'none',
                 }}
@@ -1114,16 +1585,17 @@ export default function DashboardPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
               {tasks.map((task) => {
                 const isExpanded = expandedTaskId === task.id;
+                const taskBorder = task.status === 'completed' ? t.taskBorderDone : task.status === 'running' ? t.taskBorderRun : t.taskBorderFail;
                 return (
                   <div key={task.id} style={{
                     paddingLeft: '0.65rem',
-                    borderLeft: `1.5px solid ${task.status === 'completed' ? '#3a3a3a' : task.status === 'running' ? '#666' : '#3a1a1a'}`,
+                    borderLeft: `1.5px solid ${taskBorder}`,
                     cursor: task.status !== 'running' ? 'pointer' : 'default',
                   }} onClick={() => task.status !== 'running' && setExpandedTaskId(isExpanded ? null : task.id)}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
                       <span style={{
                         fontSize: '0.8rem', fontWeight: 300,
-                        color: task.status === 'running' ? '#e8e8e8' : '#555',
+                        color: task.status === 'running' ? t.taskTextRun : t.taskTextDone,
                         flex: 1, minWidth: 0,
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       }}>
@@ -1131,7 +1603,7 @@ export default function DashboardPage() {
                       </span>
                       <span style={{
                         fontSize: '0.65rem', fontWeight: 400, flexShrink: 0,
-                        color: task.status === 'completed' ? '#707070' : task.status === 'running' ? '#a0a0a0' : '#5a3a3a',
+                        color: task.status === 'completed' ? t.taskTextDone : task.status === 'running' ? t.text3 : t.taskStepFail,
                         display: 'flex', alignItems: 'center', gap: '0.35rem',
                       }}>
                         {task.status === 'running' ? (
@@ -1152,8 +1624,13 @@ export default function DashboardPage() {
                           </>
                         )}
                       </span>
+                      {task.status !== 'running' && (
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                          style={{ color: t.taskTextDone, opacity: 0.5, flexShrink: 0, transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>
+                          <polyline points="6 9 12 15 18 9" />
+                        </svg>
+                      )}
                     </div>
-                    {/* Live steps during execution */}
                     {task.status === 'running' && task.pendingSteps && task.pendingSteps.length > 0 && (
                       <div style={{ marginTop: '0.4rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                         {task.pendingSteps.map((s) => (
@@ -1169,7 +1646,7 @@ export default function DashboardPage() {
                                 <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                               </svg>
                             )}
-                            <span style={{ fontSize: '0.7rem', fontWeight: 300, color: s.status === 'failure' ? '#6a3a3a' : '#505050', lineHeight: 1.4 }}>
+                            <span style={{ fontSize: '0.7rem', fontWeight: 300, color: s.status === 'failure' ? t.taskStepFail : t.taskTextDone, lineHeight: 1.4 }}>
                               {labelAction(s.action, s.nodeId)}
                             </span>
                           </div>
@@ -1189,7 +1666,7 @@ export default function DashboardPage() {
                                 <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                               </svg>
                             )}
-                            <span style={{ fontSize: '0.7rem', fontWeight: 300, color: r.status === 'success' ? '#505050' : '#6a3a3a', lineHeight: 1.4 }}>
+                            <span style={{ fontSize: '0.7rem', fontWeight: 300, color: r.status === 'success' ? t.taskTextDone : t.taskStepFail, lineHeight: 1.4 }}>
                               {labelAction((r.output as Record<string, unknown>)?.action as string, r.taskId)}
                               {r.error ? ` — ${r.error}` : ''}
                             </span>
@@ -1197,11 +1674,25 @@ export default function DashboardPage() {
                         ))}
                       </div>
                     )}
-                    {isExpanded && task.message && (
-                      <p style={{ fontSize: '0.72rem', fontWeight: 300, color: '#505050', margin: '0.3rem 0 0', lineHeight: 1.4 }}>
-                        {task.message}
-                      </p>
-                    )}
+                    {isExpanded && task.message && (() => {
+                      const msgExpanded = expandedMsgId === task.id;
+                      const stripped = stripMd(task.message);
+                      const needsExpand = stripped.length > MSG_TRUNC;
+                      return (
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.25rem', marginTop: '0.3rem', cursor: needsExpand ? 'pointer' : 'default' }}
+                          onClick={(e) => { if (needsExpand) { e.stopPropagation(); setExpandedMsgId(msgExpanded ? null : task.id); } }}>
+                          <p style={{ fontSize: '0.72rem', fontWeight: 300, color: t.taskMsg, margin: 0, lineHeight: 1.4, flex: 1 }}>
+                            {msgExpanded ? stripped : trunc(stripped)}
+                          </p>
+                          {needsExpand && (
+                            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                              style={{ color: t.taskMsg, opacity: 0.5, flexShrink: 0, marginTop: 3, transform: msgExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>
+                              <polyline points="6 9 12 15 18 9" />
+                            </svg>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -1211,71 +1702,6 @@ export default function DashboardPage() {
       )}
 
       </div>{/* end content wrapper */}
-
-      <style>{`
-        @keyframes expandRing {
-          0%   { transform: scale(1);   opacity: 0.5; }
-          100% { transform: scale(2.8); opacity: 0;   }
-        }
-        @keyframes processRing {
-          0%, 100% { opacity: 0.15; transform: scale(1);    }
-          50%       { opacity: 0.35; transform: scale(1.12); }
-        }
-        @keyframes blink {
-          0%, 100% { opacity: 1; }
-          50%       { opacity: 0; }
-        }
-        @keyframes spin {
-          0%   { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-        .task-spinner {
-          display: inline-block;
-          width: 10px; height: 10px;
-          border: 1.5px solid #333;
-          border-top-color: #888;
-          border-radius: 50%;
-          animation: spin 0.7s linear infinite;
-        }
-        .mic-ring {
-          position: absolute;
-          width: 72px; height: 72px;
-          border-radius: 50%;
-          border: 1px solid #444;
-          animation: expandRing 2.4s ease-out infinite;
-          pointer-events: none;
-        }
-        .mic-throbber {
-          display: inline-block;
-          width: 18px; height: 18px;
-          border-radius: 50%;
-          border: 1.5px solid #2a2a2a;
-          border-top-color: #555;
-          animation: spin 0.9s linear infinite;
-        }
-        .process-ring {
-          position: absolute;
-          width: 88px; height: 88px;
-          border-radius: 50%;
-          border: 1px solid #555;
-          animation: processRing 1.5s ease-in-out infinite;
-          pointer-events: none;
-        }
-        @keyframes greetFade {
-          0%   { opacity: 0; transform: translateY(8px); }
-          100% { opacity: 1; transform: translateY(0); }
-        }
-        .greeting-line {
-          opacity: 0;
-          animation: greetFade 0.6s ease-out forwards;
-        }
-        @keyframes slideUp {
-          0%   { transform: translateY(100%); }
-          100% { transform: translateY(0); }
-        }
-        input::placeholder { color: #252525; }
-        button:hover { border-color: #555 !important; color: #aaa !important; }
-      `}</style>
     </div>
   );
 }

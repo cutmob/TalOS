@@ -43,7 +43,10 @@ export interface OrchestratorResponse {
   taskGraph: TaskGraph;
   status: 'planning' | 'executing' | 'completed' | 'failed' | 'clarification';
   results: TaskResult[];
+  /** Full response — used by dashboard (supports markdown) */
   message: string;
+  /** Voice-optimized response — plain text, ≤3 spoken sentences, sent to Nova Sonic */
+  voiceMessage: string;
 }
 
 /**
@@ -67,6 +70,7 @@ export interface KnowledgeObject {
 export interface TaskResult {
   taskId: string;
   agentType: AgentType;
+  action?: string;
   status: 'success' | 'failure' | 'retry';
   output: unknown;
   duration: number;
