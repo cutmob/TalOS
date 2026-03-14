@@ -61,7 +61,7 @@ TalOS connects to Jira, Slack, Gmail, HubSpot, and Notion, orchestrating multi-s
                      │ /api/*  (rewritten to :3001)
 ┌────────────────────▼────────────────────────────────┐
 │              Fastify API Server (:3001)              │
-│   /api/tasks  /api/workflows  /api/metrics  /health  │
+│  /api/tasks  /api/approvals  /api/workflows  /health │
 └────────────────────┬────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────┐
@@ -85,6 +85,18 @@ TalOS connects to Jira, Slack, Gmail, HubSpot, and Notion, orchestrating multi-s
 │   Python subprocess → real browser automation       │
 └─────────────────────────────────────────────────────┘
 ```
+
+### Human-in-the-Loop Approval Gate
+
+Write actions (sending emails, posting Slack messages, creating tickets) pause for user approval before executing. Configurable per-connector:
+
+| Autonomy Level | Behavior |
+|---|---|
+| **Approve writes** (default) | Reads auto-execute, writes pause for approval |
+| **Approve everything** | All actions require approval |
+| **Full autonomy** | Execute everything immediately |
+
+Override per connector — e.g., auto-approve Jira but require approval for Gmail sends. Works in both dashboard (visual approval card) and voice ("Should I go ahead?").
 
 ### Connectors
 Jira · Slack · Gmail · HubSpot · Notion — all with exponential-backoff retry and UI-automation fallback via Nova Act.
@@ -124,7 +136,7 @@ TalOS/
 ## Quick Start
 
 ### Prerequisites
-- Node.js 20+
+- Node.js 22+
 - Python 3.10+ with `pip install nova-act`
 - AWS credentials with Bedrock access (us-east-1)
 
@@ -201,6 +213,15 @@ POST /api/workflows/search
 ```
 GET /api/metrics
 → { totalTasks, completedTasks, failedTasks, avgDuration, successRate }
+```
+
+### Approval gate
+```
+GET  /api/approvals           → pending approvals list
+POST /api/approvals/:id/approve → SSE stream of execution
+POST /api/approvals/:id/reject  → cancellation
+GET  /api/approvals/settings  → { defaultLevel, connectorOverrides }
+PUT  /api/approvals/settings  → update autonomy levels
 ```
 
 ### Health check
