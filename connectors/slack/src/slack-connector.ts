@@ -125,6 +125,23 @@ export class SlackConnector {
     return { fileId: urlData.file_id! };
   }
 
+  // ── conversations.history ───────────────────────────────────────────────────
+  // Scope: channels:history
+  async getChannelHistory(params: { channel: string; limit?: number }): Promise<Array<{ text: string; user: string; ts: string }>> {
+    const url = new URL('https://slack.com/api/conversations.history');
+    url.searchParams.set('channel', params.channel);
+    if (params.limit) url.searchParams.set('limit', String(params.limit));
+
+    const response = await withRetry(() => fetch(url.toString(), {
+      headers: { 'Authorization': `Bearer ${this.config.botToken}` }, // No Content-Type for GET
+      signal: AbortSignal.timeout(30_000),
+    }));
+
+    const data = await response.json() as { ok: boolean; messages?: Array<{ text: string; user: string; ts: string }>; error?: string };
+    if (!data.ok) throw new Error(`Slack conversations.history error: ${data.error ?? 'unknown'}`);
+    return (data.messages ?? []).map((m) => ({ text: m.text ?? '', user: m.user ?? 'unknown', ts: m.ts }));
+  }
+
   // ── conversations.list ────────────────────────────────────────────────────
   // Scope: channels:read
   async listChannels(): Promise<Array<{ id: string; name: string }>> {

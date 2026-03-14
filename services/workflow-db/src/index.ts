@@ -17,8 +17,8 @@ export class InMemoryWorkflowStore implements WorkflowStore {
     return this.workflows.get(id) ?? null;
   }
 
-  async search(query: string): Promise<WorkflowMatch[]> {
-    return this.matcher.match(query, [...this.workflows.values()]);
+  async search(query: string, queryEmbedding?: number[]): Promise<WorkflowMatch[]> {
+    return this.matcher.match(query, [...this.workflows.values()], queryEmbedding);
   }
 
   async listByConnector(connector: string): Promise<Workflow[]> {

@@ -20,4 +20,7 @@ export interface JiraSearchResult {
   summary: string;
   status: string;
   assignee: string | null;
+  priority?: string;
+  description?: string;
+  labels?: string[];
 }

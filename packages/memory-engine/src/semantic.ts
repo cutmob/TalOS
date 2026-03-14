@@ -1,5 +1,5 @@
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
-import type { MemoryConfig } from './types.js';
+import type { EmbeddingConfig } from './types.js';
 
 /**
  * Semantic memory layer using Amazon Nova 2 Multimodal Embeddings.
@@ -19,7 +19,7 @@ export class SemanticMemory {
   private modelId: string;
   private dimension: number;
 
-  constructor(config: MemoryConfig) {
+  constructor(config: EmbeddingConfig) {
     this.client = new BedrockRuntimeClient({ region: config.bedrockRegion });
     this.modelId = config.embeddingModelId;
     this.dimension = config.embeddingDimension ?? 1024;

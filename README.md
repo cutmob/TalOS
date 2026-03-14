@@ -30,21 +30,23 @@ Each command fans out into a dependency-aware task graph, executing independent 
 ---
 
 Built on Amazon Nova's full model portfolio:
-- **Nova 2 Lite** powers the orchestrator's reasoning engine, decomposing complex requests into dependency-aware task graphs executed by specialist agents (research, execution, recovery)
-- **Nova 2 Sonic** enables real-time speech-to-speech voice control via bidirectional streaming
+- **Nova 2 Pro** powers the orchestrator's reasoning engine, decomposing complex requests into dependency-aware task graphs executed by specialist agents (research, execution, recovery)
+- **Nova 2 Lite** powers the recovery agent — fast, cost-effective structured failure diagnosis and self-healing selector resolution (1M context)
+- **Nova 2 Sonic** enables real-time speech-to-speech voice control via bidirectional HTTP/2 streaming
 - **Nova Act** drives browser-based UI automation with natural language, making workflows resilient to UI changes
-- **Nova Multimodal Embeddings** power a three-layer semantic memory system (short-term, long-term, semantic) for self-healing automation — the system learns from failures and improves over time
+- **Nova Multimodal Embeddings** power a three-layer semantic memory system and a cross-tool knowledge index — indexing at `GENERIC_INDEX` purpose, retrieving at `GENERIC_RETRIEVAL` purpose (asymmetric embedding, the correct pattern per AWS docs)
 
 TalOS connects to Jira, Slack, Gmail, HubSpot, and Notion, orchestrating multi-step workflows across platforms with automatic recovery and correction learning.
 
 ### Powered by Amazon Nova
 
-| Capability | Model |
-|---|---|
-| Intent understanding & planning | `amazon.nova-2-lite-v1:0` (Converse API) |
-| Voice input / output (speech-to-speech) | `amazon.nova-2-sonic-v1:0` (bidirectional stream) |
-| Semantic memory & workflow search | `amazon.nova-2-multimodal-embeddings-v1:0` |
-| Browser / UI automation | Nova Act (Python SDK) |
+| Component | Model | API Model ID |
+|---|---|---|
+| Orchestrator / Planner | **Nova 2 Pro** — flagship reasoning, long-range planning | `us.amazon.nova-2-pro-v1:0` |
+| Recovery Agent | **Nova 2 Lite** — fast structured failure diagnosis | `us.amazon.nova-2-lite-v1:0` |
+| Voice Gateway | **Nova 2 Sonic** — real-time speech-to-speech | `amazon.nova-2-sonic-v1:0` |
+| Memory Engine | **Nova 2 Multimodal Embeddings** — semantic RAG | `amazon.nova-2-multimodal-embeddings-v1:0` |
+| Browser Automation | **Nova Act** — natural language UI automation | Python SDK |
 
 ---
 
@@ -69,12 +71,12 @@ TalOS connects to Jira, Slack, Gmail, HubSpot, and Notion, orchestrating multi-s
 │  ┌─────────────┐ ┌──────────────┐ ┌──────────────┐  │
 │  │ Orchestrator│ │   Research   │ │  Execution   │  │
 │  │   Agent     │ │    Agent     │ │    Agent     │  │
-│  │ (Nova Lite) │ │ (memory/RAG) │ │ (Nova Act)   │  │
+│  │ (Nova 2 Pro)│ │ (memory/RAG) │ │ (Nova Act)   │  │
 │  └─────────────┘ └──────────────┘ └──────────────┘  │
 │  ┌─────────────┐                                     │
 │  │  Recovery   │  Semantic Memory (Nova Embeddings)  │
 │  │   Agent     │  Workflow Registry                  │
-│  │ (Nova Lite) │  Execution Monitor                  │
+│  │ (Nova 2 Lite)│  Execution Monitor                  │
 │  └─────────────┘                                     │
 └────────────────────┬────────────────────────────────┘
                      │ HTTP (:3003)
@@ -105,10 +107,10 @@ TalOS/
 │   ├── workflow-engine/   Workflow registry + search
 │   └── memory-engine/     Nova embeddings semantic memory
 ├── agents/
-│   ├── orchestrator-agent/ Nova Lite planning agent
+│   ├── orchestrator-agent/ Nova 2 Pro planning agent
 │   ├── research-agent/     Memory/workflow lookup
-│   ├── execution-agent/    Nova Act UI automation
-│   └── recovery-agent/     Error recovery + retry logic
+│   ├── execution-agent/    API connectors + Nova Act
+│   └── recovery-agent/     Nova 2 Lite failure diagnosis + self-healing
 ├── connectors/
 │   └── jira/ slack/ gmail/ hubspot/ notion/
 └── services/
@@ -166,9 +168,12 @@ npx turbo dev
 | Variable | Default | Description |
 |---|---|---|
 | `BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock |
-| `NOVA_LITE_MODEL_ID` | `amazon.nova-2-lite-v1:0` | Text model ID |
-| `NOVA_EMBEDDINGS_MODEL_ID` | `amazon.nova-2-multimodal-embeddings-v1:0` | Embeddings model ID |
-| `NOVA_EMBEDDING_DIMENSION` | `1024` | Embedding vector dimension |
+| `NOVA_PRO_MODEL_ID` | `us.amazon.nova-2-pro-v1:0` | **Orchestrator/Planner** — complex reasoning (1M context) |
+| `NOVA_LITE_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | **Recovery Agent** — fast failure diagnosis (1M context) |
+| `NOVA_SONIC_MODEL_ID` | `amazon.nova-2-sonic-v1:0` | **Voice Gateway** — speech-to-speech (300k context) |
+| `NOVA_EMBEDDINGS_MODEL_ID` | `amazon.nova-2-multimodal-embeddings-v1:0` | **Memory Engine** — semantic RAG |
+| `NOVA_EMBEDDING_DIMENSION` | `1024` | Embedding vector dimension (256/384/1024/3072) |
+| `NOVA_SONIC_VOICE` | `tiffany` | Voice ID for Nova Sonic responses |
 | `AUTOMATION_RUNNER_URL` | `http://localhost:3003` | Nova Act bridge URL |
 | `MAX_CONCURRENT_AGENTS` | `4` | Max parallel agent slots |
 | `TASK_TIMEOUT` | `30000` | Per-task timeout (ms) |
@@ -206,10 +211,45 @@ GET /api/health
 
 ---
 
+## Knowledge System
+
+TalOS has a two-layer knowledge architecture:
+
+### Layer 1 — Three-tier agent memory (`packages/memory-engine/`)
+| Tier | What it stores | TTL |
+|---|---|---|
+| **Short-term** | Tasks and commands from the current session | Configurable (default 1hr) |
+| **Long-term** | Learned workflows, self-healed selector corrections | Permanent |
+| **Semantic** | UI element snapshots for browser automation recovery | Permanent with freshness decay |
+
+Retrieval uses **hybrid search**: Nova Multimodal cosine similarity first, keyword overlap fallback. Long-term entries apply **exponential freshness decay** (`score × e^(-age / 7days)`) so stale corrections rank below recent ones even at similar cosine distance.
+
+### Layer 2 — Cross-tool knowledge search (`knowledge_search` action)
+When the user refers to something without naming a specific tool — _"find the Acme renewal doc"_, _"what's the status of the checkout bug"_ — the planner emits a `knowledge_search` node. The execution agent fans out across **all 5 connectors in parallel**, merges results by relevance, and returns a unified `KnowledgeObject[]` with `source`, `objectType`, `externalId`, and `url` for every result.
+
+```
+knowledge_search("Acme renewal")
+  → Notion pages       (roadmaps, specs, docs)
+  → Jira issues        (tickets, bugs, stories)
+  → Gmail threads      (emails, threads)
+  → HubSpot deals      (pipeline, revenue)
+  → HubSpot contacts   (people, accounts)
+```
+
+Results are truncated to ~400 chars each so the model receives focused snippets. Set `KNOWLEDGE_SERVICE_URL` to plug in a dedicated vector store (OpenSearch, Pinecone) — the inline fallback activates automatically when it's absent.
+
+### Semantic workflow matching
+Workflows are embedded at registration time (`GENERIC_INDEX` purpose) and queries are embedded at retrieval time (`GENERIC_RETRIEVAL` purpose). This asymmetric pattern is what the Nova embeddings API is designed for — it means _"push to prod"_ finds a workflow named _"deploy to production"_, something keyword matching cannot do.
+
+---
+
 ## Key Design Decisions
 
 **Why an orchestrator-subagent pattern?**
-Separating planning (OrchestratorAgent with Nova Lite) from execution (specialist agents) allows each agent to be stateless, independently retryable, and swappable. The task graph engine enables true parallel execution of independent subtasks.
+Separating planning (OrchestratorAgent with **Nova 2 Pro**) from execution (specialist agents) allows each agent to be stateless, independently retryable, and swappable. The task graph engine enables true parallel execution of independent subtasks. The Recovery Agent uses **Nova 2 Lite** — it only needs fast structured JSON inference, not Pro-level reasoning, making it significantly cheaper per failure event. Both Pro and Lite offer a massive 1M token context window.
+
+**Why asymmetric embedding purposes?**
+Nova Multimodal Embeddings support distinct `GENERIC_INDEX` (optimised for storage) and `GENERIC_RETRIEVAL` (optimised for querying) purposes. Using them asymmetrically — index at write time, retrieve at query time — is the correct pattern per AWS docs and improves recall on paraphrase queries.
 
 **Why a Python subprocess for Nova Act?**
 Nova Act is Python-only. Rather than limiting the entire backend to Python, we bridge via HTTP: the TypeScript ExecutionAgent POSTs actions to the AutomationRunner microservice, which spawns the Python process. This keeps the core TypeScript architecture intact while gaining full Nova Act capability.
@@ -234,7 +274,7 @@ Terraform configurations for DynamoDB, S3, EventBridge, and ECS are in [`/infra/
 
 ## Built With
 
-- **Amazon Bedrock** — Nova Lite, Nova Sonic, Nova Multimodal Embeddings, Nova Act
+- **Amazon Bedrock** — Nova 2 Pro, Nova 2 Lite, Nova 2 Sonic, Nova 2 Multimodal Embeddings, Nova Act
 - **TypeScript** + Turborepo monorepo
 - **Fastify** — API server and automation runner
 - **Next.js** — Dashboard

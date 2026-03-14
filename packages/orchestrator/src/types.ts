@@ -3,7 +3,8 @@ import type { AgentType } from '@talos/agent-runtime';
 
 export interface OrchestratorConfig {
   bedrockRegion: string;
-  novaLiteModelId: string;
+  /** Nova 2 Pro — used by the Orchestrator/Planner for complex multi-step task graph reasoning */
+  novaProModelId: string;
   jiraProjectKey: string;
   maxConcurrentAgents: number;
   taskTimeout: number;
@@ -11,7 +12,7 @@ export interface OrchestratorConfig {
 }
 
 export interface ProgressEvent {
-  phase: 'planning' | 'executing' | 'node_complete' | 'completed' | 'failed' | 'chat';
+  phase: 'planning' | 'executing' | 'node_complete' | 'completed' | 'failed' | 'chat' | 'clarification';
   message: string;
   nodeId?: string;
   action?: string;
@@ -40,9 +41,27 @@ export interface SessionContext {
 export interface OrchestratorResponse {
   sessionId: string;
   taskGraph: TaskGraph;
-  status: 'planning' | 'executing' | 'completed' | 'failed';
+  status: 'planning' | 'executing' | 'completed' | 'failed' | 'clarification';
   results: TaskResult[];
   message: string;
+}
+
+/**
+ * Unified knowledge object used by the knowledge_search tool and any
+ * downstream summarization. This allows the planner to resolve fuzzy,
+ * natural-language references (e.g. "the product roadmap") to concrete
+ * records from HubSpot, Notion, Jira, etc. without hard-coding per-app
+ * field names in prompts.
+ */
+export interface KnowledgeObject {
+  id: string;
+  title: string;
+  text: string;
+  source: 'hubspot' | 'jira' | 'notion' | 'gmail' | 'slack' | 'custom';
+  objectType: string;
+  externalId?: string;
+  url?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface TaskResult {
@@ -59,6 +78,7 @@ export interface PlanningPrompt {
   availableTools: ToolDefinition[];
   availableConnectors: string[];
   workflowHistory: string[];
+  history?: { role: 'user' | 'assistant'; content: string }[];
   context: SessionContext | undefined;
   targetApp?: string;
 }

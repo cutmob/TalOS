@@ -31,6 +31,7 @@ export class ExecutionAgent extends BaseAgent {
   private gmail: GmailConnector | null = null;
   private hubspot: HubSpotConnector | null = null;
   private notion: NotionConnector | null = null;
+  private knowledgeServiceUrl: string | null = null;
 
   constructor(config: {
     memory: MemoryManager;
@@ -74,6 +75,11 @@ export class ExecutionAgent extends BaseAgent {
     if (process.env.NOTION_API_KEY) {
       this.notion = new NotionConnector({ apiKey: process.env.NOTION_API_KEY });
     }
+
+    // Optional semantic knowledge service (cross-tool vector index)
+    // When configured, the planner can call knowledge_search to resolve
+    // fuzzy natural-language references like "the product roadmap".
+    this.knowledgeServiceUrl = process.env.KNOWLEDGE_SERVICE_URL ?? null;
   }
 
   async execute(task: AgentTask): Promise<unknown> {
@@ -85,6 +91,7 @@ export class ExecutionAgent extends BaseAgent {
       // ── Slack ──
       case 'slack_send_message':      return this.slackSendMessage(task);
       case 'slack_list_channels':     return this.slackListChannels(task);
+      case 'slack_read_messages':     return this.slackReadMessages(task);
       case 'slack_reply_in_thread':   return this.slackReplyInThread(task);
       case 'slack_send_dm':           return this.slackSendDm(task);
       case 'slack_add_reaction':      return this.slackAddReaction(task);
@@ -92,6 +99,7 @@ export class ExecutionAgent extends BaseAgent {
       // ── Gmail ──
       case 'gmail_send_email':        return this.gmailSendEmail(task);
       case 'gmail_search':            return this.gmailSearch(task);
+      case 'gmail_read_email':        return this.gmailReadEmail(task);
       case 'gmail_reply':             return this.gmailReply(task);
       case 'gmail_modify_labels':     return this.gmailModifyLabels(task);
       // ── HubSpot ──
@@ -102,11 +110,16 @@ export class ExecutionAgent extends BaseAgent {
       case 'hubspot_search_deals':    return this.hubspotSearchDeals(task);
       case 'hubspot_update_deal':     return this.hubspotUpdateDeal(task);
       case 'hubspot_log_activity':    return this.hubspotLogActivity(task);
+      case 'hubspot_list_properties': return this.hubspotListProperties(task);
+      case 'hubspot_search_objects':  return this.hubspotSearchObjects(task);
       // ── Notion ──
       case 'notion_search':           return this.notionSearch(task);
+      case 'notion_read_page':        return this.notionReadPage(task);
       case 'notion_create_page':      return this.notionCreatePage(task);
       case 'notion_update_page':      return this.notionUpdatePage(task);
       case 'notion_append_block':     return this.notionAppendBlock(task);
+      // ── Cross-tool knowledge index ──
+      case 'knowledge_search':        return this.knowledgeSearch(task);
       // ── Browser automation actions (Nova Act) ──
       case 'open_app':   return this.openApp(task);
       case 'navigate':   return this.navigate(task);
@@ -428,6 +441,46 @@ export class ExecutionAgent extends BaseAgent {
     return { action: 'slack_list_channels', channels, count: channels.length };
   }
 
+  private async slackReadMessages(task: AgentTask): Promise<unknown> {
+    if (!this.slack) return { error: 'Slack not configured', status: 'skipped' };
+    const p = task.parameters;
+    const channel = p.channel as string;
+    if (!channel) throw new Error('Slack channel is required for slack_read_messages');
+    
+    // Convert channel name to ID if needed (though getChannelHistory assumes ID typically, 
+    // slackSendMessage in execution-agent seems to handle names? Actually, Slack API needs IDs.
+    // Wait, the connector doesn't resolve names to IDs automatically in getChannelHistory, 
+    // but the system passes channel IDs if it can, or the prompt might pass exactly what to search.
+    // Let's implement name-to-ID lookup like in slackSendMessage if it exists?
+    // Wait, let's look at slackSendMessage first: it just passes `channel`. Slack chat.postMessage accepts names (like #general) or IDs.
+    // But conversations.history REQUIRES a channel ID.
+    
+    // Let's resolve channel name to ID
+    let channelId = channel;
+    if (!channel.startsWith('C') && !channel.startsWith('G') && !channel.startsWith('D')) {
+      const channels = await this.slack.listChannels();
+      const match = channels.find(c => c.name === channel || c.name === channel.replace(/^#/, ''));
+      if (match) {
+        channelId = match.id;
+      } else {
+        throw new Error(`Channel ${channel} not found in workspace`);
+      }
+    }
+
+    const messages = await this.slack.getChannelHistory({
+      channel: channelId,
+      limit: (p.limit as number) ?? 20,
+    });
+    return {
+      action: 'slack_read_messages',
+      channel: channelId,
+      channelName: channel.startsWith('C') || channel.startsWith('G') || channel.startsWith('D') ? channelId : channel.replace(/^#/, ''),
+      messages,
+      count: messages.length
+    };
+  }
+
+
   private async slackReplyInThread(task: AgentTask): Promise<unknown> {
     if (!this.slack) return { error: 'Slack not configured', status: 'skipped' };
     const p = task.parameters;
@@ -495,6 +548,14 @@ export class ExecutionAgent extends BaseAgent {
       maxResults: (p.maxResults ?? p.limit) as number | undefined,
     });
     return { action: 'gmail_search', results, count: results.length };
+  }
+
+  private async gmailReadEmail(task: AgentTask): Promise<unknown> {
+    if (!this.gmail) return { error: 'Gmail not configured', status: 'skipped' };
+    const p = task.parameters;
+    if (!p.messageId && !p.id) throw new Error('messageId is required to read email');
+    const result = await this.gmail.readEmail({ messageId: (p.messageId ?? p.id) as string });
+    return { action: 'gmail_read_email', ...result };
   }
 
   private async gmailReply(task: AgentTask): Promise<unknown> {
@@ -603,12 +664,63 @@ export class ExecutionAgent extends BaseAgent {
     return { action: 'hubspot_log_activity', ...result, status: 'logged' };
   }
 
+  private async hubspotListProperties(task: AgentTask): Promise<unknown> {
+    if (!this.hubspot) return { error: 'HubSpot not configured', status: 'skipped' };
+    const objectType = (task.parameters.objectType ?? task.parameters.object_type) as 'contacts' | 'deals';
+    if (!objectType) throw new Error('hubspot_list_properties requires an objectType of "contacts" or "deals"');
+    const properties = await this.hubspot.listProperties(objectType);
+    return { action: 'hubspot_list_properties', objectType, properties, count: properties.length };
+  }
+
+  private async hubspotSearchObjects(task: AgentTask): Promise<unknown> {
+    if (!this.hubspot) return { error: 'HubSpot not configured', status: 'skipped' };
+    const objectType = (task.parameters.objectType ?? task.parameters.object_type) as 'contacts' | 'deals';
+    const query = (task.parameters.query ?? task.parameters.q) as string;
+    const properties = task.parameters.properties as string[] | undefined;
+    const limit = (task.parameters.limit as number | undefined) ?? 20;
+    if (!objectType) throw new Error('hubspot_search_objects requires an objectType of "contacts" or "deals"');
+    if (!query) throw new Error('hubspot_search_objects requires a query string');
+
+    const results = await this.hubspot.searchObjects({
+      objectType,
+      query,
+      properties,
+      limit,
+    });
+    return {
+      action: 'hubspot_search_objects',
+      objectType,
+      query,
+      properties,
+      results,
+      count: results.length,
+    };
+  }
+
   // ── Notion ────────────────────────────────────────────────────────────────
 
   private async notionSearch(task: AgentTask): Promise<unknown> {
     if (!this.notion) return { error: 'Notion not configured', status: 'skipped' };
     const results = await this.notion.search((task.parameters.query ?? task.parameters.q) as string);
     return { action: 'notion_search', results, count: results.length };
+  }
+
+  private async notionReadPage(task: AgentTask): Promise<unknown> {
+    if (!this.notion) return { error: 'Notion not configured', status: 'skipped' };
+    const p = task.parameters;
+    let pageId = (p.pageId ?? p.id) as string | undefined;
+
+    // If no pageId, search by query and read the first match
+    if (!pageId) {
+      const query = (p.query ?? p.title ?? p.name) as string | undefined;
+      if (!query) throw new Error('notion_read_page requires either pageId or query');
+      const searchResults = await this.notion.search(query);
+      if (searchResults.length === 0) return { action: 'notion_read_page', error: `No Notion page found for query: "${query}"`, status: 'not_found' };
+      pageId = searchResults[0].id;
+    }
+
+    const result = await this.notion.readPage({ pageId });
+    return { action: 'notion_read_page', ...result };
   }
 
   private async notionCreatePage(task: AgentTask): Promise<unknown> {
@@ -642,6 +754,191 @@ export class ExecutionAgent extends BaseAgent {
       content: (p.content ?? p.body ?? p.text ?? '') as string,
     });
     return { action: 'notion_append_block', ...result, status: 'appended' };
+  }
+
+  // ── Knowledge search (cross-tool semantic index) ──────────────────────────
+  /**
+   * Delegates to an external "knowledge-service" which indexes content from
+   * Jira, Slack, Gmail, HubSpot, Notion, etc. The service is responsible for
+   * using the official APIs (including HubSpot CRM v3 objects/properties)
+   * when building its index so we stay aligned with vendor docs.
+   *
+   * Expected response shape from the service:
+   *   { results: KnowledgeObject[] }
+   *
+   * Where KnowledgeObject is:
+   *   {
+   *     id: string;
+   *     title: string;
+   *     text: string;
+   *     source: 'hubspot' | 'jira' | 'notion' | 'gmail' | 'slack' | 'custom';
+   *     objectType: string;
+   *     externalId?: string;
+   *     url?: string;
+   *     metadata?: Record<string, unknown>;
+   *   }
+   */
+  private async knowledgeSearch(task: AgentTask): Promise<unknown> {
+    const query = (task.parameters.query ?? task.parameters.q) as string;
+    const limit = (task.parameters.limit as number | undefined) ?? 5;
+    if (!query) throw new Error('knowledge_search requires a query string');
+
+    // If an external knowledge service is configured, delegate to it so teams
+    // can plug in a proper vector database or RAG stack.
+    if (this.knowledgeServiceUrl) {
+      const res = await fetch(this.knowledgeServiceUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, limit }),
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`knowledge_search HTTP ${res.status}${body ? ` — ${body}` : ''}`);
+      }
+
+      const data = await res.json() as { results?: unknown[] };
+      const results = data.results ?? [];
+
+      return {
+        action: 'knowledge_search',
+        query,
+        results,
+        count: Array.isArray(results) ? results.length : 0,
+        status: 'ok',
+        backend: 'external',
+      };
+    }
+
+    // Built-in fallback: fan out the query across all configured connectors in
+    // parallel, then merge in priority order (most doc-like → most structured):
+    //   Notion → Jira → Gmail → HubSpot deals → HubSpot contacts
+    //
+    // Text is truncated to ~400 chars per result so the model receives focused
+    // snippets rather than entire page/email dumps.
+    const truncate = (text: string, max = 400): string =>
+      text.length <= max ? text : text.slice(0, max).replace(/\s+\S*$/, '') + '…';
+
+    const results: Array<Record<string, unknown>> = [];
+
+    const [notionRes, jiraRes, gmailRes, hsDealsRes, hsContactsRes] = await Promise.allSettled([
+      // Notion — roadmaps, specs, policies, meeting notes
+      this.notion
+        ? (async () => {
+            const notion = this.notion!;
+            const hits = await notion.search(query);
+            const pages = await Promise.allSettled(
+              hits.slice(0, limit).map((h) => notion.readPage({ pageId: h.id }))
+            );
+            return hits.slice(0, limit).map((h, i) => {
+              const settled = pages[i];
+              const page = settled.status === 'fulfilled' ? settled.value : null;
+              return {
+                title: page?.title ?? h.title ?? 'Untitled',
+                text: truncate(page?.content ?? ''),
+                source: 'notion',
+                objectType: 'page',
+                externalId: h.id,
+                url: page?.url ?? h.url,
+              };
+            });
+          })()
+        : Promise.resolve([]),
+
+      // Jira — tickets, bugs, stories: useful for "what's the status of X"
+      this.jira
+        ? (async () => {
+            const tickets = await this.jira!.searchTickets(
+              `project=${process.env.JIRA_PROJECT_KEY ?? 'KAN'} AND text ~ "${query.replace(/"/g, '')}" ORDER BY updated DESC`
+            );
+            return tickets.slice(0, limit).map((t) => ({
+              title: `${t.key}: ${t.summary}`,
+              text: truncate([
+                t.status && `Status: ${t.status}`,
+                t.priority && `Priority: ${t.priority}`,
+                t.assignee && `Assignee: ${t.assignee}`,
+                t.description,
+              ].filter(Boolean).join(' · ')),
+              source: 'jira',
+              objectType: 'issue',
+              externalId: t.key,
+            }));
+          })()
+        : Promise.resolve([]),
+
+      // Gmail — emails: useful for "find emails about the Acme renewal"
+      this.gmail
+        ? (async () => {
+            const emails = await this.gmail!.searchEmails({ query, maxResults: limit });
+            return emails.map((e) => ({
+              title: e.subject || '(no subject)',
+              text: truncate(e.snippet ?? ''),
+              source: 'gmail',
+              objectType: 'email',
+              externalId: e.id,
+            }));
+          })()
+        : Promise.resolve([]),
+
+      // HubSpot deals — pipeline / revenue context
+      this.hubspot
+        ? (async () => {
+            const deals = await this.hubspot!.searchDeals(query);
+            return deals.slice(0, limit).map((d) => ({
+              title: d.name || d.id,
+              text: truncate([
+                d.stage && `Stage: ${d.stage}`,
+                d.amount && `Amount: $${d.amount}`,
+                d.pipeline && `Pipeline: ${d.pipeline}`,
+                d.closeDate && `Closes: ${d.closeDate.slice(0, 10)}`,
+              ].filter(Boolean).join(' · ')),
+              source: 'hubspot',
+              objectType: 'deal',
+              externalId: d.id,
+            }));
+          })()
+        : Promise.resolve([]),
+
+      // HubSpot contacts — people / accounts
+      this.hubspot
+        ? (async () => {
+            const contacts = await this.hubspot!.searchContacts(query);
+            return contacts.slice(0, limit).map((c) => ({
+              title: [c.firstName, c.lastName].filter(Boolean).join(' ') || c.email || c.id,
+              text: truncate([
+                c.email && `Email: ${c.email}`,
+                c.company && `Company: ${c.company}`,
+                c.jobTitle && `Title: ${c.jobTitle}`,
+              ].filter(Boolean).join(' · ')),
+              source: 'hubspot',
+              objectType: 'contact',
+              externalId: c.id,
+            }));
+          })()
+        : Promise.resolve([]),
+    ]);
+
+    // Merge in priority order, stop once we have enough results
+    for (const settled of [notionRes, jiraRes, gmailRes, hsDealsRes, hsContactsRes]) {
+      if (settled.status === 'rejected') {
+        console.warn('[ExecutionAgent] knowledge_search source failed:', settled.reason);
+        continue;
+      }
+      for (const item of (settled as PromiseFulfilledResult<Array<Record<string, unknown>>>).value) {
+        if (results.length >= limit) break;
+        if (item.text || item.title) results.push(item);
+      }
+    }
+
+    return {
+      action: 'knowledge_search',
+      query,
+      results,
+      count: results.length,
+      status: 'ok',
+      backend: 'inline',
+    };
   }
 
   // ── Automation runner bridge ─────────────────────────────────────────────
@@ -791,6 +1088,7 @@ export class ExecutionAgent extends BaseAgent {
       // ── Slack ──
       { name: 'slack_send_message', description: 'Send a Slack message to a channel', parameters: { channel: { type: 'string', description: 'Channel name (no #)', required: true }, message: { type: 'string', description: 'Message text', required: true } } },
       { name: 'slack_list_channels', description: 'List available Slack channels', parameters: {} },
+      { name: 'slack_read_messages', description: 'Read latest messages from a Slack channel', parameters: { channel: { type: 'string', description: 'Channel name (no #)', required: true }, limit: { type: 'number', description: 'Max messages to return', required: false } } },
       { name: 'slack_reply_in_thread', description: 'Reply to a Slack thread', parameters: { channel: { type: 'string', description: 'Channel name or ID', required: true }, threadTs: { type: 'string', description: 'Parent message timestamp', required: true }, message: { type: 'string', description: 'Reply text', required: true } } },
       { name: 'slack_send_dm', description: 'Send a Slack DM to a user', parameters: { userId: { type: 'string', description: 'Slack user ID', required: true }, message: { type: 'string', description: 'Message text', required: true } } },
       { name: 'slack_add_reaction', description: 'Add emoji reaction to a Slack message', parameters: { channel: { type: 'string', description: 'Channel ID', required: true }, timestamp: { type: 'string', description: 'Message timestamp', required: true }, emoji: { type: 'string', description: 'Emoji name without colons', required: true } } },
@@ -798,6 +1096,7 @@ export class ExecutionAgent extends BaseAgent {
       // ── Gmail ──
       { name: 'gmail_send_email', description: 'Send an email via Gmail', parameters: { to: { type: 'array', description: 'Recipient addresses', required: true }, subject: { type: 'string', description: 'Subject line', required: true }, body: { type: 'string', description: 'Email body', required: true }, cc: { type: 'array', description: 'CC addresses', required: false }, bcc: { type: 'array', description: 'BCC addresses', required: false } } },
       { name: 'gmail_search', description: 'Search Gmail messages', parameters: { query: { type: 'string', description: 'Gmail search query', required: true }, maxResults: { type: 'number', description: 'Max results', required: false } } },
+      { name: 'gmail_read_email', description: 'Read full email body', parameters: { messageId: { type: 'string', description: 'Message ID', required: true } } },
       { name: 'gmail_reply', description: 'Reply to a Gmail thread', parameters: { threadId: { type: 'string', description: 'Thread ID', required: true }, messageId: { type: 'string', description: 'Message-ID header value', required: true }, to: { type: 'string', description: 'Reply-to address', required: true }, subject: { type: 'string', description: 'Subject', required: true }, body: { type: 'string', description: 'Reply body', required: true } } },
       { name: 'gmail_modify_labels', description: 'Add or remove Gmail labels', parameters: { messageIds: { type: 'array', description: 'Message IDs', required: true }, addLabels: { type: 'array', description: 'Label IDs to add', required: false }, removeLabels: { type: 'array', description: 'Label IDs to remove', required: false } } },
       // ── HubSpot ──
@@ -808,11 +1107,16 @@ export class ExecutionAgent extends BaseAgent {
       { name: 'hubspot_search_deals', description: 'Search HubSpot deals', parameters: { query: { type: 'string', description: 'Search query', required: true } } },
       { name: 'hubspot_update_deal', description: 'Update a HubSpot deal', parameters: { id: { type: 'string', description: 'Deal ID', required: true }, fields: { type: 'object', description: 'HubSpot property key-value pairs', required: true } } },
       { name: 'hubspot_log_activity', description: 'Log a note on a HubSpot deal or contact', parameters: { note: { type: 'string', description: 'Note body', required: true }, dealId: { type: 'string', description: 'Deal ID', required: false }, contactId: { type: 'string', description: 'Contact ID', required: false } } },
+      { name: 'hubspot_list_properties', description: 'List HubSpot CRM v3 properties for an object type, aligned with official HubSpot docs', parameters: { objectType: { type: 'string', description: '"contacts" or "deals"', required: true } } },
+      { name: 'hubspot_search_objects', description: 'Generic HubSpot CRM object search using the official CRM v3 search endpoints', parameters: { objectType: { type: 'string', description: '"contacts" or "deals"', required: true }, query: { type: 'string', description: 'Free-text search query', required: true }, properties: { type: 'array', description: 'Optional list of property names to return', required: false }, limit: { type: 'number', description: 'Max results to return', required: false } } },
       // ── Notion ──
-      { name: 'notion_search', description: 'Search Notion pages and databases', parameters: { query: { type: 'string', description: 'Search query', required: true } } },
+      { name: 'notion_search', description: 'Search Notion pages and databases — returns titles + IDs', parameters: { query: { type: 'string', description: 'Search query', required: true } } },
+      { name: 'notion_read_page', description: 'Read full Notion page content — pass pageId if known, or query to search-and-read first match', parameters: { pageId: { type: 'string', description: 'Page ID', required: false }, query: { type: 'string', description: 'Search query to find page by title', required: false } } },
       { name: 'notion_create_page', description: 'Create a Notion page', parameters: { title: { type: 'string', description: 'Page title', required: true }, content: { type: 'string', description: 'Initial page content', required: false }, parentId: { type: 'string', description: 'Parent page ID', required: false } } },
       { name: 'notion_update_page', description: 'Update a Notion page title or properties', parameters: { pageId: { type: 'string', description: 'Page ID', required: true }, title: { type: 'string', description: 'New title', required: false }, archived: { type: 'boolean', description: 'Archive the page', required: false } } },
       { name: 'notion_append_block', description: 'Append text to a Notion page', parameters: { blockId: { type: 'string', description: 'Block or page ID', required: true }, content: { type: 'string', description: 'Text to append', required: true } } },
+      // ── Knowledge index ──
+      { name: 'knowledge_search', description: 'Search a cross-tool semantic index of Jira, Slack, Gmail, HubSpot, Notion, etc. Results are generic knowledge objects resolved via the official vendor APIs at index time.', parameters: { query: { type: 'string', description: 'Natural language query describing the concept or document, e.g. "TalOS product roadmap"', required: true }, limit: { type: 'number', description: 'Max results to return', required: false } } },
       // Browser automation actions (fallback — Nova Act)
       { name: 'open_app', description: 'Open a web application in the browser', parameters: { app: { type: 'string', description: 'Application name', required: true }, url: { type: 'string', description: 'Direct URL', required: false } } },
       { name: 'navigate', description: 'Navigate to a URL', parameters: { url: { type: 'string', description: 'Target URL', required: true } } },

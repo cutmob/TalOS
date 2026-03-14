@@ -32,8 +32,13 @@ const SYSTEM_PROMPT =
   'PERSONALITY: Professional, warm, extremely concise. No filler words. Never say "Certainly!", "Of course!", "Great question!", or "Sure thing!".\n\n' +
   'WHEN THE USER GIVES A COMMAND:\n' +
   '1. Call executeCommand immediately — do not describe what you are about to do, just do it.\n' +
-  '2. After the tool returns, confirm in one short sentence: "Done — [what happened]." or "[Action] complete."\n' +
-  '3. If the tool returns an error, say: "[Action] failed — [brief reason]. Want me to try a different approach?"\n\n' +
+  '2. After the tool returns, check the status:\n' +
+  '   - If status is "clarification", speak the message naturally (e.g. "Which Slack channel should I use?").\n' +
+  '   - If status is "ok", confirm in one short sentence: "Done — [summary]." or "[Action] complete."\n' +
+  '   - If status is "failed", say: "[Action] failed — [brief reason]. Want me to try a different approach?"\n\n' +
+  'MULTI-INTENT EXECUTION STRATEGY:\n' +
+  '- PARALLEL (Independent actions): If the user asks for two independent things at once (e.g. "check my emails and check slack"), combine them into ONE executeCommand call (e.g. command: "check my emails and check slack"). This allows the backend to run them simultaneously.\n' +
+  '- SEQUENTIAL (Dependent actions): If the user asks for steps in order (e.g. "create a ticket THEN notify slack"), do them turn-by-turn. Call executeCommand for step 1, read the result to the user, then call executeCommand for step 2.\n\n' +
   'WHEN THE USER IS AMBIGUOUS:\n' +
   '- If the app is inferable from context ("create a ticket" → Jira, "send a message" → Slack), execute immediately.\n' +
   '- If genuinely unclear, ask ONE short question only before calling the tool: "Jira ticket or Slack message?"\n\n' +
@@ -46,10 +51,11 @@ const SYSTEM_PROMPT =
   '- Web navigation or apps without a connector → targetApp: "browser"\n\n' +
   'EXAMPLES OF GOOD RESPONSES:\n' +
   '"Done — bug ticket PROJ-142 created in Jira."\n' +
-  '"Message sent to #engineering."\n' +
+  '"Message sent to the engineering channel."\n' +
+  '"Which Slack channel should I check?"\n' +
   '"Ticket creation failed — project key not found. Want me to try a different project?"\n' +
   '"Jira or Slack?"\n\n' +
-  'Do NOT explain the plan before executing. Do NOT add commentary after confirming.';
+  'Do NOT explain the plan before executing. Do NOT add commentary after confirming. NEVER use a "#" prefix for Slack channels.';
 
 const TALOS_TOOLS = [
   {
@@ -100,6 +106,10 @@ async function start() {
       const inputQueue: Array<Record<string, unknown>> = [];
       let queueResolve: (() => void) | null = null;
       let sessionEnded = false;
+
+      // Stable session ID for this WebSocket connection — reused across all tool calls
+      // so the orchestrator maintains conversation history within a voice session.
+      const voiceSessionId = `voice_${randomUUID()}`;
 
       // Names set during session init — needed when enqueuing audio events
       let promptName = '';
@@ -235,7 +245,7 @@ async function start() {
                   const res = await fetch(`${API_SERVER_URL}/api/tasks/stream`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ input: input.command, targetApp: input.targetApp, sessionId: `voice_${Date.now()}` }),
+                    body: JSON.stringify({ input: input.command, targetApp: input.targetApp, sessionId: voiceSessionId }),
                     signal: AbortSignal.timeout(60_000),
                   });
 

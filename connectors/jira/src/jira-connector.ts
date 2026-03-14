@@ -71,7 +71,7 @@ export class JiraConnector {
     const params = new URLSearchParams({
       jql,
       maxResults: '50',
-      fields: 'summary,status,assignee',
+      fields: 'summary,status,assignee,priority,description,labels',
     });
 
     const response = await withRetry(() => fetch(
@@ -99,6 +99,9 @@ export class JiraConnector {
           summary?: string;
           status?: { name?: string };
           assignee?: { displayName?: string } | null;
+          priority?: { name?: string };
+          description?: { content?: Array<{ content?: Array<{ text?: string }> }> } | null;
+          labels?: string[];
         };
       }>;
     };
@@ -109,13 +112,30 @@ export class JiraConnector {
 
     return data.issues
       .filter((issue) => issue && issue.fields && typeof issue.fields.summary === 'string')
-      .map((issue) => ({
-        id: issue.id,
-        key: issue.key,
-        summary: issue.fields!.summary as string,
-        status: issue.fields!.status?.name ?? 'Unknown',
-        assignee: issue.fields!.assignee?.displayName ?? null,
-      }));
+      .map((issue) => {
+        // Extract plain text from Atlassian Document Format description
+        let description: string | undefined;
+        const adf = issue.fields!.description;
+        if (adf?.content) {
+          const texts: string[] = [];
+          for (const block of adf.content) {
+            for (const inline of block.content ?? []) {
+              if (inline.text) texts.push(inline.text);
+            }
+          }
+          if (texts.length > 0) description = texts.join(' ').slice(0, 500);
+        }
+        return {
+          id: issue.id,
+          key: issue.key,
+          summary: issue.fields!.summary as string,
+          status: issue.fields!.status?.name ?? 'Unknown',
+          assignee: issue.fields!.assignee?.displayName ?? null,
+          priority: issue.fields!.priority?.name,
+          description,
+          labels: issue.fields!.labels?.length ? issue.fields!.labels : undefined,
+        };
+      });
   }
 
   /**

@@ -18,6 +18,8 @@ export interface Workflow {
   version: number;
   createdAt: number;
   updatedAt: number;
+  /** Pre-computed Nova embedding of name + description + tags for semantic search. */
+  embedding?: number[];
 }
 
 export interface WorkflowMatch {
@@ -28,7 +30,8 @@ export interface WorkflowMatch {
 export interface WorkflowStore {
   save(workflow: Workflow): Promise<void>;
   get(id: string): Promise<Workflow | null>;
-  search(query: string): Promise<WorkflowMatch[]>;
+  /** Pass queryEmbedding to enable cosine-similarity ranking; falls back to keyword. */
+  search(query: string, queryEmbedding?: number[]): Promise<WorkflowMatch[]>;
   listByConnector(connector: string): Promise<Workflow[]>;
   delete(id: string): Promise<void>;
   update(id: string, updates: Partial<Workflow>): Promise<void>;

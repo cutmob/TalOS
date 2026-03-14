@@ -12,6 +12,13 @@ export class InMemoryStore implements MemoryStore {
   }
 
   async query(query: MemoryQuery): Promise<Array<{ entry: MemoryEntry; score: number }>> {
+    const now = Date.now();
+    // Half-life for freshness decay: 7 days in ms.
+    // A semantic entry created 7 days ago scores at 50% of its raw similarity;
+    // one created today scores at 100%. Short-term entries (with expiresAt) are
+    // excluded from decay — they expire hard via cleanup() instead.
+    const HALF_LIFE_MS = 7 * 24 * 60 * 60 * 1000;
+
     const results: Array<{ entry: MemoryEntry; score: number }> = [];
 
     for (const entry of this.entries.values()) {
@@ -30,6 +37,16 @@ export class InMemoryStore implements MemoryStore {
         const terms = query.text.toLowerCase().split(/\s+/);
         const matches = terms.filter((t) => content.includes(t)).length;
         score = Math.max(score, matches / terms.length);
+      }
+
+      // Freshness decay for long-term / semantic entries (not short-term, which expire hard).
+      // Exponential decay: score *= e^(-age / halfLife).
+      // This means stale UI snapshots and old workflow corrections rank below recent ones
+      // even when their cosine similarity is similar.
+      if (score > 0 && !entry.expiresAt && entry.createdAt) {
+        const ageMs = now - entry.createdAt;
+        const decayFactor = Math.exp(-ageMs / HALF_LIFE_MS);
+        score *= decayFactor;
       }
 
       if (score >= (query.minScore ?? 0)) {

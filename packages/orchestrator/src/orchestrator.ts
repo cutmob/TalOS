@@ -30,6 +30,7 @@ export class Orchestrator {
   private config: OrchestratorConfig;
   private activeTasks: Map<string, TaskGraph> = new Map();
   private sessionHistory: Map<string, Array<{ userInput: string; assistantOutput: string }>> = new Map();
+  private pendingPrompts: Map<string, string> = new Map();
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -45,10 +46,18 @@ export class Orchestrator {
    */
   async handleRequest(request: OrchestratorRequest): Promise<OrchestratorResponse> {
     const emit = request.onProgress ?? (() => {});
+    let effectiveInput = request.input;
 
-    // Phase 1: Plan — use Nova 2 Lite to understand the request
+    // Phase 0: Continuity — check if we are answering a pending clarification
+    const pending = this.pendingPrompts.get(request.sessionId);
+    if (pending) {
+      // Intelligently merge the original intent with the new answer.
+      effectiveInput = `[Original Context: ${pending}]\nUser Answer: ${request.input}`;
+    }
+
+    // Phase 1: Plan — use Nova Pro to reason about and decompose the request
     emit({ phase: 'planning', message: 'Understanding request...' });
-    const planResult = await this.plan(request);
+    const planResult = await this.plan({ ...request, input: effectiveInput });
 
     // Chat responses skip task execution entirely
     if (planResult.type === 'chat') {
@@ -63,6 +72,28 @@ export class Orchestrator {
         message: chatResponse,
       };
     }
+
+    // Clarification — model needs one more piece of info before planning can complete.
+    if (planResult.type === 'clarify') {
+      const question = planResult.clarifyQuestion ?? 'Could you provide more details?';
+      emit({ phase: 'clarification', message: question });
+
+      // Record the ORIGINAL input (or the already-effective input)
+      this.pendingPrompts.set(request.sessionId, pending ? pending : request.input);
+
+      // Record user input and the clarifying question in history so follow-up works
+      this.appendHistory(request.sessionId, request.input, question);
+      return {
+        sessionId: request.sessionId,
+        taskGraph: { nodes: [], createdAt: Date.now() },
+        status: 'clarification',
+        results: [],
+        message: question,
+      };
+    }
+
+    // Clear pending prompt on successful task graph planning
+    this.pendingPrompts.delete(request.sessionId);
 
     const taskGraph = planResult.taskGraph!;
     this.activeTasks.set(request.sessionId, taskGraph);
@@ -103,34 +134,35 @@ export class Orchestrator {
   }
 
   /**
-   * Phase 1: Use Nova 2 Lite via Converse API to generate an executable task graph.
+   * Phase 1: Use Nova 2 Pro via Converse API to generate an executable task graph.
+   *
+   * Nova 2 Pro is the flagship reasoning model — best for complex multi-step
+   * planning, agentic coding, and long-range task decomposition.
    *
    * Converse API is the AWS-recommended unified API for all Nova text models.
    * It provides a consistent interface across model providers and supports
    * system prompts, tool use, and structured output natively.
    */
   private async plan(request: OrchestratorRequest): Promise<PlanResult> {
+    const history = this.sessionHistory.get(request.sessionId) ?? [];
+    const formattedHistory = history.flatMap((turn) => ([
+      { role: 'user' as const, content: turn.userInput },
+      { role: 'assistant' as const, content: turn.assistantOutput },
+    ]));
+
     const userPrompt = buildPlanningPrompt({
       userRequest: request.input,
       availableTools: this.agentPool.getAvailableTools(),
       availableConnectors: this.agentPool.getAvailableConnectors(),
       workflowHistory: [],
+      history: formattedHistory,
       context: request.context,
       targetApp: request.targetApp,
     });
-
-    // Build conversation history as alternating user/assistant turns
-    const history = this.sessionHistory.get(request.sessionId) ?? [];
-    const priorMessages = history.flatMap((turn) => ([
-      { role: 'user' as const, content: [{ text: turn.userInput }] },
-      { role: 'assistant' as const, content: [{ text: turn.assistantOutput }] },
-    ]));
-
     const command = new ConverseCommand({
-      modelId: this.config.novaLiteModelId,
+      modelId: this.config.novaProModelId,
       system: [{ text: buildSystemPrompt(this.config.jiraProjectKey) }],
       messages: [
-        ...priorMessages,
         {
           role: 'user',
           content: [{ text: userPrompt }],
@@ -143,10 +175,16 @@ export class Orchestrator {
       },
     });
 
-    const response = await this.client.send(command);
-    const planText = response.output?.message?.content?.[0]?.text ?? '';
-
-    return parsePlanResponse(planText);
+    console.log(`[Orchestrator] Planning with model: ${this.config.novaProModelId}`);
+    try {
+      const response = await this.client.send(command);
+      console.log(`[Orchestrator] Bedrock response status: ${response.$metadata.httpStatusCode}`);
+      const planText = response.output?.message?.content?.[0]?.text ?? '';
+      return parsePlanResponse(planText);
+    } catch (error: any) {
+      console.error(`[Orchestrator] Bedrock Planning Error:`, error);
+      throw error;
+    }
   }
 
   /**
@@ -356,7 +394,7 @@ export class Orchestrator {
       // ── Jira search ──────────────────────────────────────────────────────
       if (action === 'jira_search') {
         const count = out.count as number ?? 0;
-        const items = (out.results as Array<{ key?: string; summary?: string; status?: string }>) ?? [];
+        const items = (out.results as Array<{ key?: string; summary?: string; status?: string; assignee?: string | null; priority?: string; description?: string; labels?: string[] }>) ?? [];
 
         if (count === 0) {
           const fallback = out.allResults as Array<{ key?: string; summary?: string; status?: string }> | undefined;
@@ -378,11 +416,15 @@ export class Orchestrator {
         }
 
         const header = count === 1 ? 'Found 1 Jira ticket.' : `Found ${count} Jira tickets.`;
-        const lines = items.slice(0, 5).map(
-          (t) => `- ${t.key ?? '?'} [${t.status ?? 'Unknown'}] — ${t.summary ?? '(no summary)'}`
-        );
+        const lines = items.slice(0, 5).map((t) => {
+          const meta: string[] = [`[${t.status ?? 'Unknown'}]`];
+          if (t.priority) meta.push(t.priority);
+          if (t.assignee) meta.push(`→ ${t.assignee}`);
+          const descSnippet = t.description ? ` — ${this.cleanSnippet(t.description, 80)}` : '';
+          return `- ${t.key ?? '?'} ${meta.join(' ')} ${t.summary ?? '(no summary)'}${descSnippet}`;
+        });
         const more = count > 5 ? `\n…and ${count - 5} more.` : '';
-        messages.push(`${header} Here are the most relevant ones:\n${lines.join('\n')}${more}`);
+        messages.push(`${header}\n${lines.join('\n')}${more}`);
         continue;
       }
 
@@ -423,16 +465,47 @@ export class Orchestrator {
       // ── HubSpot deals search ──────────────────────────────────────────────
       if (action === 'hubspot_search_deals') {
         const count = out.count as number ?? 0;
-        const items = (out.results as Array<{ id?: string; name?: string; stage?: string; amount?: number }>) ?? [];
+        const items = (out.results as Array<{ id?: string; name?: string; stage?: string; amount?: string | number; pipeline?: string; closeDate?: string }>) ?? [];
         if (count === 0) {
           messages.push('No HubSpot deals found matching that search.');
           continue;
         }
         const header = count === 1 ? 'Found 1 deal.' : `Found ${count} deals.`;
-        const lines = items.slice(0, 5).map((d) =>
-          `- ${d.name ?? d.id ?? '?'}${d.stage ? ` [${d.stage}]` : ''}${d.amount != null ? ` — $${d.amount}` : ''}`
-        );
+        const lines = items.slice(0, 5).map((d) => {
+          const parts = [`- ${d.name ?? d.id ?? '?'}`];
+          if (d.stage) parts.push(`[${d.stage}]`);
+          if (d.amount != null && d.amount !== '') parts.push(`$${d.amount}`);
+          if (d.closeDate) parts.push(`closes ${d.closeDate.slice(0, 10)}`);
+          return parts.join(' — ');
+        });
         messages.push(`${header}\n${lines.join('\n')}${count > 5 ? `\n…and ${count - 5} more.` : ''}`);
+        continue;
+      }
+
+      // ── Gmail read email ──────────────────────────────────────────────────
+      if (action === 'gmail_read_email') {
+        const subject = out.subject as string | undefined;
+        const from = out.from as string | undefined;
+        const body = out.body as string | undefined;
+        if (!subject && !body) {
+          messages.push('Email retrieved but no content found.');
+          continue;
+        }
+        const snippet = body ? this.cleanSnippet(body, 200) : '(no body)';
+        messages.push(`Email${subject ? ` "${subject}"` : ''}${from ? ` from ${from}` : ''}:\n${snippet}`);
+        continue;
+      }
+
+      // ── Notion read page ──────────────────────────────────────────────────
+      if (action === 'notion_read_page') {
+        const title = out.title as string | undefined;
+        const content = out.content as string | undefined;
+        if (!title && !content) {
+          messages.push('Notion page retrieved but no content found.');
+          continue;
+        }
+        const snippet = content ? this.cleanSnippet(content, 300) : '(empty page)';
+        messages.push(`Notion page${title ? ` "${title}"` : ''}:\n${snippet}`);
         continue;
       }
 
@@ -450,6 +523,31 @@ export class Orchestrator {
         continue;
       }
 
+      // ── Slack read messages ───────────────────────────────────────────────
+      if (action === 'slack_read_messages') {
+        const msgs = (out.messages as Array<{ text?: string; user?: string; ts?: string; bot_id?: string }>) ?? [];
+        // Filter out bot messages and system noise to give purely user-relevant summaries
+        const filtered = msgs.filter(m => !m.bot_id && !m.text?.toLowerCase().includes('checking for messages'));
+        const count = filtered.length;
+
+        // Clean up channel name (remove # prefix if it exists in the tool output)
+        const channelId = out.channel as string ?? 'channel';
+        const channelName = out.channelName as string | undefined;
+        const cleanChannel = channelName || (channelId.startsWith('#') ? channelId.slice(1) : channelId);
+
+        if (count === 0) {
+          messages.push(`No messages found in the ${cleanChannel} channel.`);
+          continue;
+        }
+        const header = `Found ${count} message${count === 1 ? '' : 's'} in the ${cleanChannel} channel.`;
+        const lines = filtered.slice(0, 5).map((m) =>
+          `- ${m.user ? `<@${m.user}>` : 'user'}: ${this.cleanSnippet(m.text ?? '', 120)}`
+        );
+        const more = count > 5 ? `\n…and ${count - 5} more.` : '';
+        messages.push(`${header}\n${lines.join('\n')}${more}`);
+        continue;
+      }
+
       // ── Slack list channels ───────────────────────────────────────────────
       if (action === 'slack_list_channels') {
         const channels = (out.channels as Array<{ name?: string; id?: string }>) ?? [];
@@ -463,13 +561,112 @@ export class Orchestrator {
         continue;
       }
 
-      // ── Write/create/update actions — brief confirmation ─────────────────
-      if (['jira_create_ticket', 'slack_send_message', 'slack_send_dm', 'gmail_send_email',
-           'hubspot_create_contact', 'hubspot_create_deal', 'notion_create_page',
-           'jira_update_ticket', 'hubspot_update_contact', 'hubspot_update_deal',
-           'notion_update_page', 'notion_append_block', 'gmail_reply', 'gmail_modify_labels',
-           'hubspot_log_activity', 'slack_reply_in_thread', 'slack_upload_file'].includes(action)) {
-        // These are confirmed by status — don't add noise, let the generic success handle it
+      // ── Knowledge search (cross-tool semantic index) ─────────────────────
+      if (action === 'knowledge_search') {
+        const items = (out.results as Array<{
+          title?: string;
+          text?: string;
+          source?: string;
+          objectType?: string;
+          url?: string;
+        }>) ?? [];
+        const count = (out.count as number) ?? items.length;
+
+        if (count === 0 || items.length === 0) {
+          messages.push('I could not find any documents or records matching that description.');
+          continue;
+        }
+
+        const header = count === 1
+          ? 'Found 1 relevant document.'
+          : `Found ${count} relevant documents.`;
+
+        const lines = items.slice(0, 3).map((k, idx) => {
+          const title = k.title || `Result ${idx + 1}`;
+          const source = k.source ? String(k.source) : undefined;
+          const kind = k.objectType;
+          const snippet = k.text ? ` — ${this.cleanSnippet(k.text, 180)}` : '';
+          const sourceTag = [source, kind].filter(Boolean).join(' · ');
+          return `- ${title}${sourceTag ? ` (${sourceTag})` : ''}${snippet}`;
+        });
+
+        const more = count > 3 ? `\n…and ${count - 3} more in the index.` : '';
+        messages.push(`${header}\n${lines.join('\n')}${more}`);
+        continue;
+      }
+
+      // ── Write/create/update confirmations ────────────────────────────────
+      if (action === 'jira_create_ticket') {
+        const key = out.key as string | undefined;
+        const url = out.url as string | undefined;
+        messages.push(`Created Jira ticket${key ? ` ${key}` : ''}${url ? ` — ${url}` : ''}.`);
+        continue;
+      }
+      if (action === 'jira_update_ticket') {
+        const updated = (out.updated as string[]) ?? [];
+        const total = (out.keys as string[])?.length ?? updated.length;
+        if (updated.length === 0) {
+          messages.push('No Jira tickets were updated (no matching transition found).');
+        } else {
+          messages.push(`Updated ${updated.length} of ${total} Jira ticket${total === 1 ? '' : 's'}: ${updated.slice(0, 6).join(', ')}${updated.length > 6 ? '…' : ''}.`);
+        }
+        continue;
+      }
+      if (action === 'slack_send_message' || action === 'slack_reply_in_thread') {
+        const channel = out.channel as string | undefined;
+        messages.push(`Message sent${channel ? ` to #${channel}` : ''}.`);
+        continue;
+      }
+      if (action === 'slack_send_dm') {
+        messages.push('Direct message sent.');
+        continue;
+      }
+      if (action === 'slack_upload_file') {
+        messages.push(`File uploaded to Slack.`);
+        continue;
+      }
+      if (action === 'gmail_send_email' || action === 'gmail_reply') {
+        messages.push('Email sent.');
+        continue;
+      }
+      if (action === 'gmail_modify_labels') {
+        const ids = (out.messageIds as string[]) ?? [];
+        messages.push(`Labels updated on ${ids.length} email${ids.length === 1 ? '' : 's'}.`);
+        continue;
+      }
+      if (action === 'hubspot_create_contact') {
+        const id = out.id as string | undefined;
+        messages.push(`HubSpot contact created${id ? ` (id: ${id})` : ''}.`);
+        continue;
+      }
+      if (action === 'hubspot_update_contact') {
+        messages.push('HubSpot contact updated.');
+        continue;
+      }
+      if (action === 'hubspot_create_deal') {
+        const id = out.id as string | undefined;
+        messages.push(`HubSpot deal created${id ? ` (id: ${id})` : ''}.`);
+        continue;
+      }
+      if (action === 'hubspot_update_deal') {
+        messages.push('HubSpot deal updated.');
+        continue;
+      }
+      if (action === 'hubspot_log_activity') {
+        messages.push('Activity logged in HubSpot.');
+        continue;
+      }
+      if (action === 'notion_create_page') {
+        const url = out.url as string | undefined;
+        messages.push(`Notion page created${url ? ` — ${url}` : ''}.`);
+        continue;
+      }
+      if (action === 'notion_update_page') {
+        messages.push('Notion page updated.');
+        continue;
+      }
+      if (action === 'notion_append_block') {
+        messages.push('Content appended to Notion page.');
         continue;
       }
     }

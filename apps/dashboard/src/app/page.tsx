@@ -5,21 +5,42 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const ACTION_LABELS: Record<string, string> = {
-  jira_create_ticket: 'Created Jira ticket',
-  jira_search: 'Searched Jira',
-  jira_update_ticket: 'Updated Jira ticket',
-  slack_send_message: 'Sent Slack message',
-  slack_list_channels: 'Listed Slack channels',
-  gmail_send_email: 'Sent email',
-  gmail_search: 'Searched Gmail',
-  hubspot_create_contact: 'Created HubSpot contact',
-  hubspot_search: 'Searched HubSpot',
-  hubspot_create_deal: 'Created HubSpot deal',
-  notion_create_page: 'Created Notion page',
-  notion_search: 'Searched Notion',
-  browse: 'Browsed web',
-  search: 'Searched',
-  execute: 'Executed task',
+  // Jira
+  jira_create_ticket:       'Created Jira ticket',
+  jira_search:              'Searched Jira',
+  jira_update_ticket:       'Updated Jira ticket',
+  // Slack
+  slack_send_message:       'Sent Slack message',
+  slack_read_messages:      'Read Slack messages',
+  slack_list_channels:      'Listed Slack channels',
+  slack_reply_in_thread:    'Replied in thread',
+  slack_send_dm:            'Sent direct message',
+  slack_add_reaction:       'Added reaction',
+  slack_upload_file:        'Uploaded file',
+  // Gmail
+  gmail_send_email:         'Sent email',
+  gmail_search:             'Searched Gmail',
+  gmail_read_email:         'Read email',
+  gmail_reply:              'Replied to email',
+  gmail_modify_labels:      'Updated email labels',
+  // HubSpot
+  hubspot_create_contact:   'Created HubSpot contact',
+  hubspot_search_contacts:  'Searched HubSpot contacts',
+  hubspot_update_contact:   'Updated HubSpot contact',
+  hubspot_create_deal:      'Created HubSpot deal',
+  hubspot_search_deals:     'Searched HubSpot deals',
+  hubspot_update_deal:      'Updated HubSpot deal',
+  hubspot_log_activity:     'Logged HubSpot activity',
+  // Notion
+  notion_search:            'Searched Notion',
+  notion_read_page:         'Read Notion page',
+  notion_create_page:       'Created Notion page',
+  notion_update_page:       'Updated Notion page',
+  notion_append_block:      'Appended to Notion page',
+  // Browser
+  open_app: 'Opened app', navigate: 'Navigated', click: 'Clicked',
+  type: 'Typed', extract: 'Extracted data', screenshot: 'Took screenshot',
+  // Agent ops
   recover: 'Recovered from error',
 };
 
@@ -39,6 +60,13 @@ interface TaskResult {
   error?: string;
 }
 
+interface PendingStep {
+  nodeId: string;
+  action: string;
+  agentType: string;
+  status: 'running' | 'success' | 'failure';
+}
+
 interface TaskEntry {
   id: string;
   command: string;
@@ -49,6 +77,7 @@ interface TaskEntry {
   results?: TaskResult[];
   message?: string;
   progressLabel?: string;
+  pendingSteps?: PendingStep[];
 }
 
 interface Metrics {
@@ -175,6 +204,7 @@ export default function DashboardPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeRef = useRef(0);
   const taskHistoryRef = useRef<TaskEntry[]>([]);
+  const pendingTaskIdRef = useRef<string | null>(null);
 
   // Poll /api/metrics every 5s
   useEffect(() => {
@@ -248,9 +278,26 @@ export default function DashboardPage() {
     const input = (text ?? command).trim();
     if (!input) return;
 
-    const taskId = `task_${Date.now()}`;
+    const isContinuing = !!pendingTaskIdRef.current;
+    const taskId = pendingTaskIdRef.current ?? `task_${Date.now()}`;
     const startedAt = Date.now();
-    setTasks((prev) => [{ id: taskId, command: input, status: 'running', startedAt, progressLabel: 'thinking' }, ...prev]);
+    pendingTaskIdRef.current = null; // Consume the pending state
+
+    setTasks((prev) => {
+      if (isContinuing) {
+        // Update the existing task in place
+        return prev.map((t) => t.id === taskId ? {
+          ...t,
+          command: `${t.command}\n> ${input}`,
+          status: 'running',
+          progressLabel: 'planning',
+          pendingSteps: [],
+        } : t);
+      }
+      // Prepend a new task
+      return [{ id: taskId, command: input, status: 'running', startedAt, progressLabel: 'planning', pendingSteps: [] }, ...prev];
+    });
+
     setCommand('');
     activeRef.current += 1;
     setActiveAgents(new Set(['orchestrator']));
@@ -259,60 +306,137 @@ export default function DashboardPage() {
       setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, ...patch } : t));
     };
 
+    const updatePendingStep = (nodeId: string, patch: Partial<PendingStep>) => {
+      setTasks((prev) => prev.map((t) => {
+        if (t.id !== taskId) return t;
+        const steps = (t.pendingSteps ?? []).map((s) => s.nodeId === nodeId ? { ...s, ...patch } : s);
+        return { ...t, pendingSteps: steps };
+      }));
+    };
+
     try {
-      const res = await fetch('/api/chat', {
+      const apiBase = process.env.NEXT_PUBLIC_API_SERVER_URL ?? '';
+      const res = await fetch(`${apiBase}/api/tasks/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ input, sessionId: sessionIdRef.current }),
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.body) throw new Error('No response body');
 
-      const data = await res.json() as {
-        status?: string;
-        response?: string;
-        results?: TaskResult[];
-      };
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-      const duration = Date.now() - startedAt;
+      // SSE parser: accumulate chunks, split on double-newline event boundaries
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-      const agentTypes = new Set<string>(
-        (data.results ?? []).map((r) => r.agentType)
-      );
-      if (agentTypes.size > 0) {
-        setActiveAgents(agentTypes);
-        setTimeout(() => setActiveAgents(new Set()), 1500);
+        // Each SSE event ends with \n\n
+        const events = buffer.split('\n\n');
+        buffer = events.pop() ?? ''; // last partial event stays in buffer
+
+        for (const rawEvent of events) {
+          let evtType = '';
+          let evtData = '';
+          for (const line of rawEvent.split('\n')) {
+            if (line.startsWith('event: ')) evtType = line.slice(7).trim();
+            else if (line.startsWith('data: ')) evtData = line.slice(6).trim();
+          }
+          if (!evtType || !evtData) continue;
+
+          let parsed: Record<string, unknown>;
+          try { parsed = JSON.parse(evtData); } catch { continue; }
+
+          if (evtType === 'progress') {
+            const phase = parsed.phase as string;
+            const action = parsed.action as string | undefined;
+            const agentType = parsed.agentType as string | undefined;
+            const nodeId = parsed.nodeId as string | undefined;
+            const status = parsed.status as string | undefined;
+
+            if (phase === 'planning') {
+              setActiveAgents((prev) => new Set([...prev, 'orchestrator']));
+              updateTask({ progressLabel: 'planning' });
+
+            } else if (phase === 'executing' && nodeId && agentType) {
+              // Light up the correct agent dot, add a live step entry
+              setActiveAgents((prev) => new Set([...prev, 'orchestrator', agentType]));
+              updateTask({ progressLabel: labelAction(action, nodeId) });
+              setTasks((prev) => prev.map((t) => {
+                if (t.id !== taskId) return t;
+                const alreadyExists = (t.pendingSteps ?? []).some((s) => s.nodeId === nodeId);
+                if (alreadyExists) return t;
+                return {
+                  ...t,
+                  pendingSteps: [...(t.pendingSteps ?? []), {
+                    nodeId,
+                    action: action ?? nodeId,
+                    agentType,
+                    status: 'running' as const,
+                  }],
+                };
+              }));
+
+            } else if (phase === 'node_complete' && nodeId) {
+              updatePendingStep(nodeId, { status: status === 'success' ? 'success' : 'failure' });
+              if (agentType) setActiveAgents(new Set(['orchestrator', agentType]));
+            }
+
+          } else if (evtType === 'result') {
+            const result = parsed as {
+              status?: string;
+              message?: string;
+              results?: TaskResult[];
+            };
+            const duration = Date.now() - startedAt;
+            const isClarification = result.status === 'clarification';
+            const ok = isClarification || (result.results?.every((r) => r.status === 'success') ?? result.status === 'completed');
+            const summary = result.message ?? (ok ? 'Done.' : 'Some tasks failed.');
+
+            setTranscript(summary);
+
+            const agentTypes = new Set<string>((result.results ?? []).map((r) => r.agentType));
+            if (agentTypes.size > 0) {
+              setActiveAgents(agentTypes);
+              setTimeout(() => setActiveAgents(new Set()), 1500);
+            } else {
+              setActiveAgents(new Set());
+            }
+
+            if (isClarification) {
+              pendingTaskIdRef.current = taskId;
+            } else {
+              pendingTaskIdRef.current = null;
+            }
+
+            const patch: Partial<TaskEntry> = {
+              status: isClarification ? 'running' : ok ? 'completed' : 'failed',
+              completedAt: isClarification ? undefined : Date.now(),
+              duration: isClarification ? undefined : duration,
+              results: result.results,
+              message: summary,
+            };
+            if (!isClarification) patch.pendingSteps = undefined;
+            updateTask(patch);
+
+          } else if (evtType === 'error') {
+            pendingTaskIdRef.current = null; // Clear on error
+            throw new Error((parsed.message as string) ?? 'Stream error');
+          }
+        }
       }
-
-      const ok =
-        data.results?.every((r) => r.status === 'success') ??
-        data.status === 'completed';
-
-      // Prefer the chat response field directly from the orchestrator;
-      // only fall back to a generic summary if it truly returned nothing.
-      let summary = data.response ?? '';
-
-      if (!summary) {
-        summary = ok
-          ? 'All tasks completed successfully.'
-          : 'Some tasks failed. Check results for details.';
-      }
-
-      setTranscript(summary);
-
-      updateTask({
-        status: ok ? 'completed' : 'failed',
-        completedAt: Date.now(),
-        duration,
-        results: data.results as TaskResult[] | undefined,
-        message: summary,
-      });
     } catch (err) {
+      pendingTaskIdRef.current = null; // Clear on error
       updateTask({
         status: 'failed',
         completedAt: Date.now(),
         duration: Date.now() - startedAt,
         message: String(err),
+        pendingSteps: undefined,
       });
     } finally {
       activeRef.current -= 1;
@@ -884,6 +1008,29 @@ export default function DashboardPage() {
                     {task.message}
                   </p>
                 )}
+                {/* Live steps during execution */}
+                {task.status === 'running' && task.pendingSteps && task.pendingSteps.length > 0 && (
+                  <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    {task.pendingSteps.map((s) => (
+                      <div key={s.nodeId} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        {s.status === 'running' ? (
+                          <span className="task-spinner" style={{ width: 7, height: 7, flexShrink: 0 }} />
+                        ) : s.status === 'success' ? (
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#4a7a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        ) : (
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#7a4a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                          </svg>
+                        )}
+                        <span style={{ fontSize: '0.7rem', fontWeight: 300, color: s.status === 'failure' ? '#6a3a3a' : '#505050', lineHeight: 1.4 }}>
+                          {labelAction(s.action, s.nodeId)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {isExpanded && !isChat && task.results && (
                   <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                     {task.results.map((r) => (
@@ -1006,6 +1153,29 @@ export default function DashboardPage() {
                         )}
                       </span>
                     </div>
+                    {/* Live steps during execution */}
+                    {task.status === 'running' && task.pendingSteps && task.pendingSteps.length > 0 && (
+                      <div style={{ marginTop: '0.4rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                        {task.pendingSteps.map((s) => (
+                          <div key={s.nodeId} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            {s.status === 'running' ? (
+                              <span className="task-spinner" style={{ width: 7, height: 7, flexShrink: 0 }} />
+                            ) : s.status === 'success' ? (
+                              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#4a7a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                <polyline points="20 6 9 17 4 12" />
+                              </svg>
+                            ) : (
+                              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#7a4a4a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                              </svg>
+                            )}
+                            <span style={{ fontSize: '0.7rem', fontWeight: 300, color: s.status === 'failure' ? '#6a3a3a' : '#505050', lineHeight: 1.4 }}>
+                              {labelAction(s.action, s.nodeId)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {isExpanded && task.results && (
                       <div style={{ marginTop: '0.4rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                         {task.results.map((r) => (

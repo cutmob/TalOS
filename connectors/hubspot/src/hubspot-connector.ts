@@ -131,7 +131,7 @@ export class HubSpotConnector {
   }
 
   // POST /crm/v3/objects/deals/search
-  async searchDeals(query: string): Promise<Array<{ id: string; name: string; stage: string; amount: string; pipeline: string }>> {
+  async searchDeals(query: string): Promise<Array<{ id: string; name: string; stage: string; amount: string; pipeline: string; closeDate?: string }>> {
     const response = await withRetry(() => fetch(`${BASE}/crm/v3/objects/deals/search`, {
       method: 'POST',
       headers: this.headers,
@@ -149,6 +149,7 @@ export class HubSpotConnector {
       stage: r.properties.dealstage ?? '',
       amount: r.properties.amount ?? '',
       pipeline: r.properties.pipeline ?? '',
+      closeDate: r.properties.closedate || undefined,
     }));
   }
 
@@ -203,5 +204,64 @@ export class HubSpotConnector {
     if (!response.ok) throw new Error(`HubSpot logActivity error: ${response.status}`);
     const data = await response.json() as { id: string };
     return { id: data.id };
+  }
+
+  // ── Metadata / schema helpers ─────────────────────────────────────────────
+
+  /**
+   * List CRM v3 properties for a given object type, following the official
+   * HubSpot CRM objects & properties API.
+   *
+   * Docs:
+   *   - Contacts: GET /crm/v3/properties/contacts
+   *   - Deals:    GET /crm/v3/properties/deals
+   */
+  async listProperties(objectType: 'contacts' | 'deals'): Promise<Array<{
+    name: string;
+    label: string;
+    description?: string;
+    type: string;
+    fieldType: string;
+  }>> {
+    const response = await withRetry(() => fetch(`${BASE}/crm/v3/properties/${objectType}`, {
+      method: 'GET',
+      headers: this.headers,
+    }));
+    if (!response.ok) throw new Error(`HubSpot listProperties error: ${response.status}`);
+    const data = await response.json() as { results: Array<any> };
+    return data.results.map((p) => ({
+      name: p.name,
+      label: p.label,
+      description: p.description,
+      type: p.type,
+      fieldType: p.fieldType,
+    }));
+  }
+
+  /**
+   * Generic HubSpot CRM v3 object search helper.
+   *
+   * This intentionally mirrors the official CRM v3 "Search" endpoints:
+   *   POST /crm/v3/objects/{objectType}/search
+   */
+  async searchObjects(params: {
+    objectType: 'contacts' | 'deals';
+    query: string;
+    properties?: string[];
+    limit?: number;
+  }): Promise<Array<{ id: string; properties: Record<string, unknown> }>> {
+    const { objectType, query, properties, limit = 20 } = params;
+    const response = await withRetry(() => fetch(`${BASE}/crm/v3/objects/${objectType}/search`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify({
+        query,
+        limit,
+        ...(properties && properties.length > 0 ? { properties } : {}),
+      }),
+    }));
+    if (!response.ok) throw new Error(`HubSpot searchObjects error: ${response.status}`);
+    const data = await response.json() as { results: Array<{ id: string; properties: Record<string, unknown> }> };
+    return data.results;
   }
 }

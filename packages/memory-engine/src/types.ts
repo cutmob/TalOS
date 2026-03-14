@@ -32,11 +32,16 @@ export interface MemoryQuery {
   minScore?: number;
 }
 
-export interface MemoryConfig {
+/** Minimal config needed by SemanticMemory to call Nova 2 Multimodal Embeddings. */
+export interface EmbeddingConfig {
   bedrockRegion: string;
   embeddingModelId: string;
   /** Embedding vector dimension: 256 | 384 | 1024 | 3072 (default 1024) */
   embeddingDimension: number;
+}
+
+/** Full memory system config — extends EmbeddingConfig with memory-management settings. */
+export interface MemoryConfig extends EmbeddingConfig {
   shortTermTTL: number; // ms
   maxShortTermEntries: number;
 }

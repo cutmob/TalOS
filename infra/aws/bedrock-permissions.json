@@ -10,9 +10,7 @@
         "bedrock:InvokeModelWithBidirectionalStream"
       ],
       "Resource": [
-        "arn:aws:bedrock:*::foundation-model/amazon.nova-2-lite-v1*",
-        "arn:aws:bedrock:*::foundation-model/amazon.nova-2-sonic-v1*",
-        "arn:aws:bedrock:*::foundation-model/amazon.nova-2-multimodal-embeddings-v1*"
+        "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
       ]
     },
     {

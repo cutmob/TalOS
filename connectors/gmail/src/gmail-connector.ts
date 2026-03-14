@@ -111,6 +111,48 @@ export class GmailConnector {
     return results;
   }
 
+  // ── users.messages.get ────────────────────────────────────────────────────
+  // Scope: gmail.readonly
+  async readEmail(params: { messageId: string }): Promise<{ subject: string; from: string; body: string }> {
+    const token = await this.getAccessToken();
+    const response = await withRetry(() => fetch(`${GMAIL_BASE}/messages/${params.messageId}?format=full`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(30_000),
+    }));
+    if (!response.ok) throw new Error(`Gmail read error: ${response.status}`);
+    const data = await response.json() as {
+      payload?: {
+        headers?: Array<{ name: string; value: string }>;
+        parts?: Array<{ mimeType: string; body: { data?: string }; parts?: any[] }>;
+        body?: { data?: string };
+      };
+    };
+
+    const hdrs = data.payload?.headers ?? [];
+    const subject = hdrs.find(h => h.name === 'Subject')?.value ?? '';
+    const from = hdrs.find(h => h.name === 'From')?.value ?? '';
+
+    // Extract body (try to find text/plain part)
+    let bodyData = data.payload?.body?.data;
+    if (!bodyData && data.payload?.parts) {
+      const getPlainText = (parts: any[]): string | undefined => {
+        for (const p of parts) {
+          if (p.mimeType === 'text/plain' && p.body?.data) return p.body.data;
+          if (p.parts) {
+            const nested = getPlainText(p.parts);
+            if (nested) return nested;
+          }
+        }
+        return undefined;
+      };
+      
+      bodyData = getPlainText(data.payload.parts) || data.payload.parts[0]?.body?.data;
+    }
+
+    const body = bodyData ? Buffer.from(bodyData, 'base64url').toString('utf8') : '';
+    return { subject, from, body };
+  }
+
   // ── users.messages.send (reply — same endpoint, with threadId + RFC headers)
   // Scope: gmail.send
   async replyToEmail(params: {

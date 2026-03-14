@@ -70,6 +70,55 @@ export class NotionConnector {
     }));
   }
 
+  // ── GET /v1/pages/{pageId} + GET /v1/blocks/{pageId}/children ────────────
+  async readPage(params: { pageId: string }): Promise<{ title: string; content: string; url: string }> {
+    // Fetch page metadata (title, url) and block content in parallel
+    const [metaResponse, blocksResponse] = await Promise.all([
+      withRetry(() => fetch(`${BASE}/pages/${params.pageId}`, {
+        method: 'GET',
+        headers: this.headers,
+      })),
+      withRetry(() => fetch(`${BASE}/blocks/${params.pageId}/children`, {
+        method: 'GET',
+        headers: this.headers,
+      })),
+    ]);
+
+    if (!metaResponse.ok) throw new Error(`Notion readPage (meta) error: ${metaResponse.status}`);
+    if (!blocksResponse.ok) throw new Error(`Notion readPage (blocks) error: ${blocksResponse.status}`);
+
+    const meta = await metaResponse.json() as {
+      url?: string;
+      properties?: Record<string, { type?: string; title?: Array<{ plain_text: string }> }>;
+      title?: Array<{ plain_text: string }>;
+    };
+
+    // Find the title property by type — works for both "title" and "Name" property names
+    const titleProp = meta.properties
+      ? Object.values(meta.properties).find((p) => p.type === 'title')
+      : undefined;
+    const title =
+      titleProp?.title?.[0]?.plain_text ??
+      meta.title?.[0]?.plain_text ??
+      'Untitled';
+
+    const blocksData = await blocksResponse.json() as { results: Array<Record<string, unknown>> };
+    const textBlocks = blocksData.results.map(block => {
+      const type = block.type as string;
+      const richText = (block[type] as Record<string, unknown>)?.rich_text;
+      if (Array.isArray(richText)) {
+        return richText.map((t: Record<string, unknown>) => t.plain_text as string).join('');
+      }
+      return '';
+    }).filter(t => t.length > 0);
+
+    return {
+      title,
+      content: textBlocks.join('\n\n'),
+      url: meta.url ?? `https://notion.so/${params.pageId.replace(/-/g, '')}`,
+    };
+  }
+
   // ── POST /v1/pages ────────────────────────────────────────────────────────
   async createPage(page: NotionPage): Promise<{ id: string; url: string }> {
     const response = await withRetry(() => fetch(`${BASE}/pages`, {
