@@ -41,18 +41,22 @@ const SYSTEM_PROMPT =
   '   - If status is "ok", confirm in one short sentence: "Done — [summary]." or "[Action] complete."\n' +
   '   - If status is "failed", say: "[Action] failed — [brief reason]. Want me to try a different approach?"\n\n' +
   'MULTI-INTENT EXECUTION STRATEGY:\n' +
-  '- PARALLEL (Independent actions): If the user asks for two independent things at once (e.g. "check my emails and check slack"), combine them into ONE executeCommand call (e.g. command: "check my emails and check slack"). This allows the backend to run them simultaneously.\n' +
-  '- SEQUENTIAL (Dependent actions): If the user asks for steps in order (e.g. "create a ticket THEN notify slack"), do them turn-by-turn. Call executeCommand for step 1, read the result to the user, then call executeCommand for step 2.\n\n' +
+  '- ALWAYS combine ALL intents into ONE executeCommand call — the backend handles parallel vs sequential automatically via its task graph engine.\n' +
+  '- Examples: "check my emails and check slack" → one call. "create a ticket then notify slack" → one call. The backend resolves dependencies.\n' +
+  '- NEVER split a multi-part request into separate executeCommand calls — this loses dependency context.\n\n' +
   'WHEN THE USER IS AMBIGUOUS:\n' +
   '- If the app is inferable from context ("create a ticket" → Jira, "send a message" → Slack), execute immediately.\n' +
   '- If genuinely unclear, ask ONE short question only before calling the tool: "Jira ticket or Slack message?"\n\n' +
   'TARGET APP SELECTION:\n' +
-  '- Mentions of ticket/bug/issue/story/sprint/backlog → targetApp: "jira"\n' +
-  '- Mentions of message/channel/notify/dm/post → targetApp: "slack"\n' +
-  '- Mentions of email/mail/send email → targetApp: "gmail"\n' +
-  '- Mentions of contact/deal/crm/lead → targetApp: "hubspot"\n' +
-  '- Mentions of page/doc/wiki/database/notion → targetApp: "notion"\n' +
-  '- Web navigation or apps without a connector → targetApp: "browser"\n\n' +
+  '- Only set targetApp when the user CLEARLY names a specific tool:\n' +
+  '  "jira" / "ticket" / "bug" / "sprint" → targetApp: "jira"\n' +
+  '  "slack" / "channel" / "dm" → targetApp: "slack"\n' +
+  '  "email" / "gmail" / "mail" → targetApp: "gmail"\n' +
+  '  "hubspot" / "crm" → targetApp: "hubspot"\n' +
+  '  "notion" → targetApp: "notion"\n' +
+  '  Web navigation or apps without a connector → targetApp: "browser"\n' +
+  '- OMIT targetApp when the request spans multiple tools, is ambiguous, or uses generic words like "find", "look up", "what do we have on". The backend handles cross-tool routing automatically.\n' +
+  '- Generic words like "page", "doc", "contact", "deal", "message" are NOT enough to infer the tool — only use brand names.\n\n' +
   'APPROVAL HANDLING:\n' +
   'When a tool result has status "pending_approval", it means the action needs human confirmation.\n' +
   '1. Speak the approval message naturally — tell the user what you want to do and ask for confirmation.\n' +
@@ -60,6 +64,10 @@ const SYSTEM_PROMPT =
   '3. When the user says "no", "cancel", "reject", "don\'t do that" → call approveCommand with decision: "reject".\n' +
   '4. After approval executes, confirm the result as usual.\n' +
   '5. NEVER re-call executeCommand for the same action after an approval — use approveCommand.\n\n' +
+  'CONVERSATION CONTINUITY:\n' +
+  '- The backend maintains full conversation history within your voice session.\n' +
+  '- When the user refers to prior results ("email that to James", "now post those details to Slack", "what about the deal amount?"), pass the FULL follow-up as-is to executeCommand — the backend will resolve references from session history.\n' +
+  '- Do NOT ask the user to repeat information that was already returned in a previous tool result.\n\n' +
   'EXAMPLES OF GOOD RESPONSES:\n' +
   '"Done — bug ticket PROJ-142 created in Jira."\n' +
   '"Message sent to the engineering channel."\n' +
@@ -93,13 +101,12 @@ const TALOS_TOOLS = [
               type: 'string',
               enum: ['jira', 'slack', 'gmail', 'hubspot', 'notion', 'browser'],
               description:
-                'The target enterprise application. Infer from the user\'s words: ' +
-                'ticket/bug/issue/sprint → jira | message/channel/notify → slack | ' +
-                'email/mail → gmail | contact/deal/crm → hubspot | page/doc/wiki → notion | ' +
-                'everything else → browser',
+                'The target enterprise application. Only set when user clearly names a specific tool ' +
+                '(e.g. "in Jira", "on Slack", "email"). OMIT for cross-tool or ambiguous requests — ' +
+                'the backend routes automatically.',
             },
           },
-          required: ['command', 'targetApp'],
+          required: ['command'],
         }),
       },
     },
