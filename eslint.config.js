@@ -12,6 +12,7 @@ export default tseslint.config(
       '**/.turbo/**',
       '**/coverage/**',
       'apps/dashboard/public/**',
+      'apps/dashboard/next-env.d.ts',
       'infra/**',
     ],
   },
@@ -33,6 +34,13 @@ export default tseslint.config(
     rules: {
       // img elements without alt are fine in a dashboard
       '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
+  // Seed/utility scripts — Node globals are fine
+  {
+    files: ['scripts/**/*.mjs', 'scripts/**/*.js'],
+    languageOptions: {
+      globals: { process: 'readonly', console: 'readonly', fetch: 'readonly' },
     },
   },
   // Test files can use any patterns they need
