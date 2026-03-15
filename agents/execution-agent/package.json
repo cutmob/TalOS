@@ -16,7 +16,10 @@
     "@talos/agent-runtime": "*",
     "@talos/memory-engine": "*",
     "@talos/connector-jira": "*",
-    "@talos/connector-slack": "*"
+    "@talos/connector-slack": "*",
+    "@talos/connector-gmail": "*",
+    "@talos/connector-hubspot": "*",
+    "@talos/connector-notion": "*"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

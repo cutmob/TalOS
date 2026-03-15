@@ -911,7 +911,7 @@ export class ExecutionAgent extends BaseAgent {
       this.gmail
         ? (async () => {
             const emails = await this.gmail!.searchEmails({ query, maxResults: limit });
-            return emails.map((e) => ({
+            return emails.map((e: { id: string; subject: string; snippet?: string }) => ({
               title: e.subject || '(no subject)',
               text: truncate(e.snippet ?? ''),
               source: 'gmail',
