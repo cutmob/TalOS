@@ -602,7 +602,11 @@ export default function DashboardPage() {
             const duration = Date.now() - startedAt;
             const isClarification = result.status === 'clarification';
             const isPendingApproval = result.status === 'pending_approval';
-            const ok = isClarification || isPendingApproval || (result.results?.every((r) => r.status === 'success') ?? result.status === 'completed');
+            // Trust the orchestrator's top-level status as source of truth.
+            // result.results may contain both the original failure AND a successful
+            // recovery for the same node, so .every(r => r.status === 'success')
+            // would incorrectly report failure for recovered tasks.
+            const ok = isClarification || isPendingApproval || result.status === 'completed';
             const summary = result.message ?? (ok ? 'Done.' : 'Some tasks failed.');
 
             transcriptSourceRef.current = 'result';
@@ -809,9 +813,7 @@ export default function DashboardPage() {
           }
 
           const now = Date.now();
-          const ok =
-            result.results?.every((r) => r.status === 'success') ??
-            result.status === 'completed';
+          const ok = result.status === 'completed';
 
           if (voiceTaskIdRef.current) {
             // Finalize the task entry created by progress events
@@ -963,7 +965,7 @@ export default function DashboardPage() {
               if (taskId) {
                 setTasks((prev) => prev.map((t) => t.id === taskId ? {
                   ...t,
-                  status: data.results?.every((r: TaskResult) => r.status === 'success') ? 'completed' : 'failed',
+                  status: data.status === 'completed' ? 'completed' : 'failed',
                   completedAt: Date.now(),
                   duration: Date.now() - t.startedAt,
                   results: data.results,
