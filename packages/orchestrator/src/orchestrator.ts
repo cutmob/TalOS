@@ -134,7 +134,7 @@ export class Orchestrator {
     const allSucceeded = results.every((r) => r.status === 'success');
 
     const summaryMessage = this.buildSummaryMessage(results, allSucceeded);
-    const voiceMessage = this.buildVoiceMessage(summaryMessage);
+    const voiceMessage = this.buildVoiceMessage(summaryMessage, results);
 
     emit({
       phase: allSucceeded ? 'completed' : 'failed',
@@ -527,7 +527,7 @@ export class Orchestrator {
 
     const allSucceeded = results.every((r) => r.status === 'success');
     const summaryMessage = this.buildSummaryMessage(results, allSucceeded);
-    const voiceMessage = this.buildVoiceMessage(summaryMessage);
+    const voiceMessage = this.buildVoiceMessage(summaryMessage, results);
 
     emit({ phase: allSucceeded ? 'completed' : 'failed', message: summaryMessage });
     this.appendHistory(sessionId, pending.originalInput, summaryMessage);
@@ -1086,9 +1086,99 @@ export class Orchestrator {
    * Build a voice-optimized summary for Nova Sonic.
    * Rules: plain text only (no markdown), ≤3 spoken sentences,
    * lists capped at 2 items, page content trimmed to a brief oral summary.
+   *
+   * Builds voice messages directly from structured results rather than
+   * stripping markdown from the text summary — avoids awkward spoken output
+   * like "PROJ dash 142 bracket Done bracket".
    */
-  private buildVoiceMessage(fullMessage: string): string {
-    // Strip markdown: headings, bold/italic, bullets, code, links
+  private buildVoiceMessage(fullMessage: string, results?: TaskResult[]): string {
+    // If we have structured results, build voice output directly from data
+    if (results && results.length > 0) {
+      const voiceParts: string[] = [];
+
+      for (const r of results) {
+        if (r.status !== 'success' || r.agentType !== 'execution' || !r.output) continue;
+        const out = r.output as Record<string, unknown>;
+        const action = out.action as string | undefined;
+        if (!action) continue;
+
+        // ── Search results: count + top 2 items spoken naturally ──
+        if (action === 'jira_search') {
+          const count = out.count as number ?? 0;
+          const items = (out.results as Array<{ key?: string; summary?: string; status?: string }>) ?? [];
+          if (count === 0) { voiceParts.push('No Jira tickets found.'); continue; }
+          const top = items.slice(0, 2).map(t => `${t.key}, ${t.summary}`).join('. ');
+          voiceParts.push(`Found ${count} Jira ticket${count === 1 ? '' : 's'}. ${top}${count > 2 ? `. And ${count - 2} more.` : '.'}`);
+        } else if (action === 'gmail_search') {
+          const count = out.count as number ?? 0;
+          const items = (out.results as Array<{ subject?: string; from?: string }>) ?? [];
+          if (count === 0) { voiceParts.push('No emails found.'); continue; }
+          const top = items.slice(0, 2).map(e => `"${e.subject}" from ${e.from}`).join('. ');
+          voiceParts.push(`Found ${count} email${count === 1 ? '' : 's'}. ${top}${count > 2 ? `. And ${count - 2} more.` : '.'}`);
+        } else if (action === 'slack_read_messages') {
+          const msgs = (out.messages as Array<{ text?: string }>) ?? [];
+          const count = msgs.length;
+          const channel = out.channelName as string ?? out.channel as string ?? 'that channel';
+          if (count === 0) { voiceParts.push(`No messages in ${channel}.`); continue; }
+          voiceParts.push(`Found ${count} message${count === 1 ? '' : 's'} in ${channel}.`);
+        } else if (action === 'hubspot_search_deals') {
+          const count = out.count as number ?? 0;
+          const items = (out.results as Array<{ name?: string; stage?: string }>) ?? [];
+          if (count === 0) { voiceParts.push('No deals found.'); continue; }
+          const top = items.slice(0, 2).map(d => `${d.name}${d.stage ? `, ${d.stage}` : ''}`).join('. ');
+          voiceParts.push(`Found ${count} deal${count === 1 ? '' : 's'}. ${top}.`);
+        } else if (action === 'hubspot_search_contacts') {
+          const count = out.count as number ?? 0;
+          if (count === 0) { voiceParts.push('No contacts found.'); continue; }
+          voiceParts.push(`Found ${count} HubSpot contact${count === 1 ? '' : 's'}.`);
+        } else if (action === 'notion_search') {
+          const count = out.count as number ?? 0;
+          const items = (out.results as Array<{ title?: string }>) ?? [];
+          if (count === 0) { voiceParts.push('No Notion pages found.'); continue; }
+          const top = items.slice(0, 2).map(p => p.title).join(', ');
+          voiceParts.push(`Found ${count} Notion page${count === 1 ? '' : 's'}: ${top}${count > 2 ? `, and ${count - 2} more` : ''}.`);
+        } else if (action === 'notion_read_page') {
+          if (out.status === 'not_found') { voiceParts.push('That Notion page was not found.'); continue; }
+          const title = out.title as string | undefined;
+          voiceParts.push(title ? `Here's the ${title} page. Want me to read through the details?` : 'Got the Notion page content. Want me to read through it?');
+        } else if (action === 'knowledge_search') {
+          const count = (out.count as number) ?? 0;
+          if (count === 0) { voiceParts.push('I could not find any matching documents.'); continue; }
+          voiceParts.push(`Found ${count} relevant document${count === 1 ? '' : 's'} across your tools.`);
+        }
+        // ── Write confirmations: short spoken confirmations ──
+        else if (action === 'jira_create_ticket') {
+          const key = out.key as string | undefined;
+          voiceParts.push(`Done, created Jira ticket${key ? ` ${key}` : ''}.`);
+        } else if (action === 'jira_update_ticket') {
+          const updated = (out.updated as string[]) ?? [];
+          voiceParts.push(updated.length > 0 ? `Updated ${updated.length} Jira ticket${updated.length === 1 ? '' : 's'}.` : 'No Jira tickets were updated.');
+        } else if (action === 'slack_send_message' || action === 'slack_reply_in_thread') {
+          voiceParts.push(`Message sent${out.channel ? ` to ${out.channel}` : ''}.`);
+        } else if (action === 'gmail_send_email' || action === 'gmail_reply') {
+          voiceParts.push('Email sent.');
+        } else if (action === 'hubspot_create_deal') {
+          voiceParts.push(`Deal created${out.name ? `: ${out.name}` : ''}.`);
+        } else if (action === 'hubspot_log_activity') {
+          voiceParts.push('Activity logged in HubSpot.');
+        } else if (action === 'notion_create_page') {
+          voiceParts.push('Notion page created.');
+        } else if (action === 'gmail_search_contacts') {
+          // Skip — intermediate step, not user-facing
+          continue;
+        } else {
+          voiceParts.push(`${this.formatActionName(action)} complete.`);
+        }
+      }
+
+      if (voiceParts.length > 0) {
+        // Cap total voice output at 3 sentences
+        const capped = voiceParts.slice(0, 3);
+        return capped.join(' ');
+      }
+    }
+
+    // Fallback: strip markdown from text summary
     const text = fullMessage
       .replace(/^#{1,6}\s+/gm, '')
       .replace(/[*_`~]{1,3}([^*_`~\n]+)[*_`~]{1,3}/g, '$1')
@@ -1099,15 +1189,12 @@ export class Orchestrator {
       .replace(/\s{2,}/g, ' ')
       .trim();
 
-    // Split into sentences and cap at 3
     const sentences = text
       .split(/(?<=[.!?])\s+/)
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
     if (sentences.length <= 3) return sentences.join(' ');
-
-    // For longer content (e.g. full page reads), take first 2 sentences + a closing cue
     return sentences.slice(0, 2).join(' ') + ' Want me to continue?';
   }
 }

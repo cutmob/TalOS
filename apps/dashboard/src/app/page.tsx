@@ -345,7 +345,9 @@ export default function DashboardPage() {
   const agentActivatedAtRef = useRef<Map<string, number>>(new Map());
   // Track the active voice task so progress events can attach to it
   const voiceTaskIdRef = useRef<string | null>(null);
-  // Track transcript source to prevent voice textOutput from overwriting task result markdown
+  // Track transcript source to prevent voice textOutput from overwriting task result markdown.
+  // When set to 'result', voice transcript text is suppressed so the markdown stays visible
+  // until the user's next voice input clears it.
   const transcriptSourceRef = useRef<'voice' | 'result' | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -438,6 +440,9 @@ export default function DashboardPage() {
   const submitCommand = useCallback(async (text?: string) => {
     const input = (text ?? command).trim();
     if (!input) return;
+
+    // New command — clear the result lock so transcript updates normally
+    transcriptSourceRef.current = null;
 
     const isContinuing = !!pendingTaskIdRef.current;
     const taskId = pendingTaskIdRef.current ?? `task_${Date.now()}`;
@@ -602,7 +607,6 @@ export default function DashboardPage() {
 
             transcriptSourceRef.current = 'result';
             setTranscript(summary);
-            setTimeout(() => { transcriptSourceRef.current = null; }, 5000);
 
             // Approval gate — store pending approval for the approval card
             if (isPendingApproval && result.approval) {
@@ -704,12 +708,22 @@ export default function DashboardPage() {
         if (msg.type === 'ready') { setIsVoiceConnected(true); setMicState('listening'); }
         // Nova Sonic speaking — play PCM audio
         if (msg.type === 'audio' && msg.audio) playPCM24k(msg.audio as string);
-        // Live transcript of what Nova Sonic understood — don't overwrite task result markdown
+        // Live transcript — role=USER is the user speaking, role=ASSISTANT is Nova's spoken reply.
+        // When a rich markdown result is showing (transcriptSourceRef === 'result'):
+        //   - USER transcript: clear the lock — user is starting a new command, show what they're saying
+        //   - ASSISTANT transcript: suppress — user already sees the markdown, no need for voice text
         if (msg.type === 'transcript' && msg.text) {
-          if (transcriptSourceRef.current !== 'result') {
+          const role = msg.role as string | undefined;
+          if (role === 'USER') {
+            // User is speaking again — unlock and show their input
+            transcriptSourceRef.current = 'voice';
+            setTranscript(msg.text as string);
+          } else if (transcriptSourceRef.current !== 'result') {
+            // Assistant transcript, but no markdown result showing — display it
             transcriptSourceRef.current = 'voice';
             setTranscript(msg.text as string);
           }
+          // else: Assistant transcript while markdown is showing — suppress
         }
         // Real-time progress from voice gateway — light up agent dots as steps execute
         if (msg.type === 'progress') {
@@ -792,7 +806,6 @@ export default function DashboardPage() {
           if (result?.message) {
             transcriptSourceRef.current = 'result';
             setTranscript(result.message);
-            setTimeout(() => { transcriptSourceRef.current = null; }, 5000);
           }
 
           const now = Date.now();
@@ -945,7 +958,6 @@ export default function DashboardPage() {
             if (evtType === 'result') {
               transcriptSourceRef.current = 'result';
               setTranscript(data.message ?? 'Done.');
-              setTimeout(() => { transcriptSourceRef.current = null; }, 5000);
               // Update the task entry
               const taskId = pendingTaskIdRef.current;
               if (taskId) {
@@ -980,7 +992,6 @@ export default function DashboardPage() {
       await fetch(`${apiBase}/api/approvals/${pendingApproval.approvalId}/reject`, { method: 'POST' });
       transcriptSourceRef.current = 'result';
       setTranscript('Action cancelled — no changes were made.');
-      setTimeout(() => { transcriptSourceRef.current = null; }, 5000);
       const taskId = pendingTaskIdRef.current;
       if (taskId) {
         setTasks((prev) => prev.map((t) => t.id === taskId ? {

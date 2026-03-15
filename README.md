@@ -128,7 +128,8 @@ TalOS/
 └── services/
     ├── embeddings-service/ InMemoryStore (swap → OpenSearch)
     ├── workflow-db/        InMemoryWorkflowStore (swap → DynamoDB)
-    └── execution-monitor/  Real-time metrics + event tracking
+    ├── execution-monitor/  Real-time metrics + event tracking
+    └── auth-service/       JWT session management (stub, ready for production)
 ```
 
 ---
@@ -151,27 +152,27 @@ cp .env.example .env
 # Edit .env — minimum required: AWS credentials (BEDROCK_REGION defaults to us-east-1)
 ```
 
-### 3. Start all services (4 terminals or use tmux)
-```bash
-# Terminal 1 — API server
-npm run dev --workspace=apps/api-server
+### 3. Start all services
 
-# Terminal 2 — Voice gateway
-npm run dev --workspace=apps/voice-gateway
-
-# Terminal 3 — Automation runner (Nova Act)
-npm run dev --workspace=apps/automation-runner
-
-# Terminal 4 — Dashboard
-npm run dev --workspace=apps/dashboard
-```
-
-Open **http://localhost:3000** — click the microphone button and speak a command.
-
-### Single command (Turborepo)
+**Option A — Single command (Turborepo)**
 ```bash
 npx turbo dev
 ```
+
+**Option B — Docker Compose**
+```bash
+docker-compose up
+```
+
+**Option C — Root convenience scripts (4 terminals)**
+```bash
+npm run dev:api        # API server (:3001)
+npm run dev:voice      # Voice gateway (:3002)
+npm run dev:runner     # Automation runner (:3003)
+npm run dev:dashboard  # Next.js dashboard (:3000)
+```
+
+Open **http://localhost:3000** — click the microphone button and speak a command.
 
 ---
 
@@ -300,6 +301,15 @@ Terraform configurations for DynamoDB, S3, EventBridge, and ECS are in [`/infra/
 - **Fastify** — API server and automation runner
 - **Next.js** — Dashboard
 - **Web Audio API** — Real-time PCM mic capture for Nova Sonic
+
+---
+
+## CI/CD
+
+GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on every push and PR:
+1. `npx turbo build` — compile all packages
+2. `npx turbo test` — Vitest test suites across 6 packages
+3. `npx turbo lint` — ESLint 9 flat config
 
 ---
 

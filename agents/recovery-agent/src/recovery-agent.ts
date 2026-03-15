@@ -162,19 +162,38 @@ Context: ${context}
 </failure>
 
 <categories>
+─── UI Automation Failures ───
 - selector_changed:   A UI element moved, was renamed, or the DOM structure changed
 - page_not_loaded:    The target page did not load or timed out
-- auth_required:      The action requires authentication that is missing or expired
 - element_hidden:     The element exists but is not visible or interactable
-- network_error:      An API call or resource failed to load
+
+─── API / Connector Failures ───
+- auth_expired:       401/403 — authentication is missing, expired, or insufficient permissions. Suggest re-auth or checking API key.
+- rate_limited:       429 — too many requests. Suggest retry with exponential backoff.
+- invalid_params:     400 — bad request parameters. Suggest correcting the specific field that caused the error.
+- not_found:          404 — resource not found. Suggest broadening search, checking the ID, or trying alternative query terms.
+- network_error:      5xx or timeout — upstream service unavailable. Suggest retry after brief wait.
+
+─── Other ───
 - other:              Failure does not match the above categories
 </categories>
 
-<example>
+<examples>
+Example 1 (UI):
 Error: "Element 'Create Issue' not found after 10s"
 Context: "Attempting to click Create button on Jira board"
 Output: {"category":"selector_changed","recoverable":true,"suggestedAction":"Search for alternative elements containing 'Create' or '+'","explanation":"The 'Create Issue' button was likely renamed or moved in a Jira UI update."}
-</example>
+
+Example 2 (API):
+Error: "Notion search error: 401"
+Context: "Searching Notion for onboarding docs"
+Output: {"category":"auth_expired","recoverable":false,"suggestedAction":"Check NOTION_API_KEY — the integration token may have expired or been revoked.","explanation":"401 from Notion API indicates the bearer token is invalid or expired."}
+
+Example 3 (API):
+Error: "HubSpot search error: 429"
+Context: "Searching HubSpot contacts for Acme"
+Output: {"category":"rate_limited","recoverable":true,"suggestedAction":"Retry after 2-3 seconds with exponential backoff.","explanation":"HubSpot enforces rate limits — 429 means too many requests in the current window."}
+</examples>
 
 Respond with JSON only: { "category": "...", "recoverable": true|false, "suggestedAction": "...", "explanation": "..." }`;
 

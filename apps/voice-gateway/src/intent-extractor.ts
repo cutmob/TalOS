@@ -20,12 +20,12 @@ export interface Intent {
  */
 export class IntentExtractor {
   private readonly platformKeywords: Record<string, string[]> = {
-    jira: ['jira', 'ticket', 'issue', 'bug', 'story', 'sprint'],
-    slack: ['slack', 'channel', 'message', 'dm'],
-    gmail: ['gmail', 'email', 'mail', 'send email'],
+    jira: ['jira'],
+    slack: ['slack'],
+    gmail: ['gmail', 'email', 'mail'],
     calendar: ['calendar', 'meeting', 'schedule', 'event', 'appointment'],
-    hubspot: ['hubspot', 'crm', 'contact', 'deal', 'campaign'],
-    notion: ['notion', 'page', 'database', 'wiki'],
+    hubspot: ['hubspot', 'crm'],
+    notion: ['notion'],
   };
 
   private readonly actionPatterns: Array<{ pattern: RegExp; action: string }> = [
@@ -66,12 +66,22 @@ export class IntentExtractor {
 
     const isComplete = action !== 'unknown';
 
+    // Score based on how much we understood:
+    // action + platform = 0.9 (fully clear intent)
+    // action only = 0.7 (know what to do, not where)
+    // platform only = 0.6 (know where, not what — still useful for routing)
+    // neither = 0.3 (too ambiguous)
+    let confidence = 0.3;
+    if (isComplete && platform) confidence = 0.9;
+    else if (isComplete) confidence = 0.7;
+    else if (platform) confidence = 0.6;
+
     return {
       action,
       platform,
       content: withoutWake,
       isComplete,
-      confidence: isComplete ? 0.85 : 0.3,
+      confidence,
       raw: text,
     };
   }
