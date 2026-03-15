@@ -1,10 +1,16 @@
 # TalOS — The AI Operating System
 
-> **Amazon Nova Hackathon Submission** | #AmazonNova
+> **Amazon Nova Hackathon Submission** | **Category: Agentic AI** | #AmazonNova
 
 **TalOS is a voice-controlled AI operating system that turns a single spoken sentence into a fully automated, multi-step enterprise workflow.** Say _"create a Jira ticket for the login bug and post a Slack update to engineering"_ — TalOS plans the steps, executes them in parallel across your tools, and self-heals if anything goes wrong.
 
-## Who is it for?
+Built entirely on the **Amazon Nova model family** — Nova 2 Pro for orchestration, Nova 2 Lite for recovery, Nova 2 Sonic for real-time voice, Nova Multimodal Embeddings for semantic memory, and Nova Act for browser automation.
+
+---
+
+## Why TalOS?
+
+Knowledge workers spend hours every day context-switching between apps — filing tickets, posting updates, sending emails, logging CRM data. TalOS eliminates that friction entirely: **speak once, and every downstream action happens automatically.**
 
 | Role | How TalOS helps |
 |---|---|
@@ -13,9 +19,7 @@
 | **Sales & revenue teams** | Create HubSpot contacts, log deals, and send follow-up emails by speaking one sentence |
 | **Operations & support** | Automate cross-platform runbooks — escalate, notify, log, and document in one voice command |
 
-Basically: **if your job involves moving information between apps**, TalOS eliminates that manual work.
-
-## Example commands you can say
+## Example commands
 
 ```
 "Create a P1 Jira ticket for the checkout bug and alert #incidents on Slack"
@@ -29,24 +33,29 @@ Each command fans out into a dependency-aware task graph, executing independent 
 
 ---
 
-Built on Amazon Nova's full model portfolio:
-- **Nova 2 Pro** powers the orchestrator's reasoning engine, decomposing complex requests into dependency-aware task graphs executed by specialist agents (research, execution, recovery)
-- **Nova 2 Lite** powers the recovery agent — fast, cost-effective structured failure diagnosis and self-healing selector resolution (1M context)
-- **Nova 2 Sonic** enables real-time speech-to-speech voice control via bidirectional HTTP/2 streaming
-- **Nova Act** drives browser-based UI automation with natural language, making workflows resilient to UI changes
-- **Nova Multimodal Embeddings** power a three-layer semantic memory system and a cross-tool knowledge index — indexing at `GENERIC_INDEX` purpose, retrieving at `GENERIC_RETRIEVAL` purpose (asymmetric embedding, the correct pattern per AWS docs)
+## Powered by Amazon Nova
 
-TalOS connects to Jira, Slack, Gmail, HubSpot, and Notion, orchestrating multi-step workflows across platforms with automatic recovery and correction learning.
+TalOS uses **five Amazon Nova models** working together — every AI capability in the system is powered by Nova:
 
-### Powered by Amazon Nova
+| Component | Model | API | Model ID |
+|---|---|---|---|
+| **Orchestrator / Planner** | Nova 2 Pro | Converse API | `us.amazon.nova-2-pro-v1:0` |
+| **Recovery Agent** | Nova 2 Lite | Converse API | `us.amazon.nova-2-lite-v1:0` |
+| **Voice Gateway** | Nova 2 Sonic | Bidirectional Streaming | `amazon.nova-2-sonic-v1:0` |
+| **Memory Engine** | Nova Multimodal Embeddings | InvokeModel | `amazon.nova-2-multimodal-embeddings-v1:0` |
+| **Browser Automation** | Nova Act | Python SDK | `pip install nova-act` |
 
-| Component | Model | API Model ID |
-|---|---|---|
-| Orchestrator / Planner | **Nova 2 Pro** — flagship reasoning, long-range planning | `us.amazon.nova-2-pro-v1:0` |
-| Recovery Agent | **Nova 2 Lite** — fast structured failure diagnosis | `us.amazon.nova-2-lite-v1:0` |
-| Voice Gateway | **Nova 2 Sonic** — real-time speech-to-speech | `amazon.nova-2-sonic-v1:0` |
-| Memory Engine | **Nova 2 Multimodal Embeddings** — semantic RAG | `amazon.nova-2-multimodal-embeddings-v1:0` |
-| Browser Automation | **Nova Act** — natural language UI automation | Python SDK |
+### How each model is used
+
+**Nova 2 Pro** — The brain. Receives the user's natural language request, decomposes it into a dependency-aware task graph, selects which connectors to invoke, and synthesizes a coherent response from all results. Uses the Converse API with structured system prompts that encode routing rules for 30+ connector actions.
+
+**Nova 2 Lite** — The recovery specialist. When a task fails (API error, selector mismatch, timeout), Lite performs fast structured JSON diagnosis: identifies the failure class, generates a correction strategy, and stores the fix in semantic memory so the same failure never happens twice. Lite's 1M-token context and low latency make it ideal for high-frequency retry loops.
+
+**Nova 2 Sonic** — The voice interface. Real-time speech-to-speech via HTTP/2 bidirectional streaming (`InvokeModelWithBidirectionalStream`). The dashboard sends PCM audio (16-bit, 16kHz, mono) from the browser microphone; Sonic transcribes, reasons, invokes tools (triggering the orchestrator), and speaks the response back as PCM audio (24kHz). Supports barge-in (user can interrupt), multi-turn conversation, and tool use mid-stream.
+
+**Nova Multimodal Embeddings** — The memory. Powers a three-layer semantic memory system and a cross-tool knowledge index. Uses asymmetric embedding: documents are indexed with `GENERIC_INDEX` purpose, queries use `GENERIC_RETRIEVAL` purpose — the correct pattern per AWS docs for maximum recall on paraphrase queries. This means _"push to prod"_ matches a workflow named _"deploy to production"_.
+
+**Nova Act** — The hands. When API access isn't available or the user needs to automate a web UI, Nova Act drives a real browser with natural language instructions. The TypeScript backend communicates with a Python subprocess bridge via JSON over stdin/stdout. Each `act()` call targets one specific action for >90% reliability.
 
 ---
 
@@ -56,27 +65,29 @@ TalOS connects to Jira, Slack, Gmail, HubSpot, and Notion, orchestrating multi-s
 ┌─────────────────────────────────────────────────────┐
 │                   Next.js Dashboard                  │
 │   Voice Button → WebSocket → Nova Sonic Gateway      │
-│   Live metrics, agent status, task history           │
+│   Text Input  → REST API  → Orchestrator             │
+│   Live agent status, task history, approval cards     │
 └────────────────────┬────────────────────────────────┘
                      │ /api/*  (rewritten to :3001)
 ┌────────────────────▼────────────────────────────────┐
 │              Fastify API Server (:3001)              │
-│  /api/tasks  /api/approvals  /api/workflows  /health │
+│  POST /api/tasks/stream (SSE)  GET /api/metrics      │
+│  /api/approvals  /api/workflows  /api/health         │
 └────────────────────┬────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────┐
 │                   Orchestrator                       │
-│   Task Graph Engine → topological parallel dispatch  │
+│   Nova 2 Pro → Task Graph → topological dispatch     │
 │                                                      │
 │  ┌─────────────┐ ┌──────────────┐ ┌──────────────┐  │
-│  │ Orchestrator│ │   Research   │ │  Execution   │  │
-│  │   Agent     │ │    Agent     │ │    Agent     │  │
-│  │ (Nova 2 Pro)│ │ (memory/RAG) │ │ (Nova Act)   │  │
+│  │ Orchestrator │ │   Research   │ │  Execution   │  │
+│  │   Agent      │ │    Agent     │ │    Agent     │  │
+│  │ (Nova 2 Pro) │ │ (memory/RAG) │ │ (connectors) │  │
 │  └─────────────┘ └──────────────┘ └──────────────┘  │
 │  ┌─────────────┐                                     │
-│  │  Recovery   │  Semantic Memory (Nova Embeddings)  │
-│  │   Agent     │  Workflow Registry                  │
-│  │ (Nova 2 Lite)│  Execution Monitor                  │
+│  │  Recovery    │  Semantic Memory (Nova Embeddings)  │
+│  │   Agent      │  Workflow Registry                  │
+│  │(Nova 2 Lite) │  Execution Monitor                  │
 │  └─────────────┘                                     │
 └────────────────────┬────────────────────────────────┘
                      │ HTTP (:3003)
@@ -86,9 +97,29 @@ TalOS connects to Jira, Slack, Gmail, HubSpot, and Notion, orchestrating multi-s
 └─────────────────────────────────────────────────────┘
 ```
 
-### Human-in-the-Loop Approval Gate
+### How it works
 
-Write actions (sending emails, posting Slack messages, creating tickets) pause for user approval before executing. Configurable per-connector:
+1. **Input** — User speaks (via Nova Sonic) or types a command
+2. **Planning** — Nova 2 Pro decomposes the request into a task graph with dependency edges
+3. **Approval gate** — Write actions pause for user confirmation (configurable per connector)
+4. **Execution** — Independent tasks run in parallel; dependent tasks wait for upstream results
+5. **Recovery** — If a task fails, Nova 2 Lite diagnoses the failure and retries with corrections
+6. **Response** — Results aggregate into a markdown summary (dashboard) and voice confirmation (Sonic)
+
+### Orchestrator-subagent pattern
+
+The orchestrator is the single decision-maker. Four specialist agents handle execution:
+
+- **Orchestrator Agent** — Task decomposition and planning via Nova 2 Pro
+- **Research Agent** — Context-aware lookup from semantic memory and workflow registry
+- **Execution Agent** — Routes actions to the 5 connectors or Nova Act automation
+- **Recovery Agent** — Failure diagnosis via Nova 2 Lite; stores corrections in semantic memory for future self-healing
+
+All agents are **stateless and independently retryable**. The task graph engine enables true parallel execution — a 4-step workflow with 2 independent branches runs in 2 batches, not 4.
+
+### Human-in-the-loop approval gate
+
+Write actions (sending emails, posting messages, creating tickets) pause for user approval before executing:
 
 | Autonomy Level | Behavior |
 |---|---|
@@ -96,10 +127,71 @@ Write actions (sending emails, posting Slack messages, creating tickets) pause f
 | **Approve everything** | All actions require approval |
 | **Full autonomy** | Execute everything immediately |
 
-Override per connector — e.g., auto-approve Jira but require approval for Gmail sends. Works in both dashboard (visual approval card) and voice ("Should I go ahead?").
+Configurable per connector — e.g., auto-approve Jira but require approval for Gmail sends. Works in both dashboard (visual approval card with action preview) and voice ("Should I go ahead?").
 
-### Connectors
-Jira · Slack · Gmail · HubSpot · Notion — all with exponential-backoff retry and UI-automation fallback via Nova Act.
+---
+
+## Connectors
+
+TalOS connects to **5 enterprise platforms** with 30+ actions:
+
+### Jira
+`jira_create_ticket` · `jira_search` · `jira_update_ticket`
+- Create tickets with summary, description, issue type, priority, and labels
+- Search via JQL with status/priority/assignee filtering
+- Bulk status transitions across multiple tickets
+
+### Slack
+`slack_send_message` · `slack_read_messages` · `slack_list_channels` · `slack_reply_in_thread` · `slack_send_dm` · `slack_add_reaction` · `slack_upload_file`
+- Post to channels, reply in threads, send DMs
+- Rich message formatting with Block Kit support
+
+### Gmail
+`gmail_send_email` · `gmail_search` · `gmail_read_email` · `gmail_reply` · `gmail_modify_labels` · `gmail_search_contacts`
+- Send, search, read, and reply to emails (OAuth2 with auto-refresh)
+- Contact lookup via Google People API — say a name, TalOS finds the email
+
+### HubSpot
+`hubspot_create_contact` · `hubspot_search_contacts` · `hubspot_update_contact` · `hubspot_create_deal` · `hubspot_search_deals` · `hubspot_update_deal` · `hubspot_log_activity` · `hubspot_list_properties` · `hubspot_search_objects`
+- Full CRM pipeline management — contacts, deals, activities
+- Generic object search across any HubSpot entity
+
+### Notion
+`notion_search` · `notion_read_page` · `notion_create_page` · `notion_update_page` · `notion_append_block`
+- Fuzzy search across all pages; read full page content via markdown endpoint
+- Create and update pages with rich text blocks
+
+### Cross-tool knowledge search
+`knowledge_search` — When the user doesn't name a specific tool ("find the Acme renewal doc"), TalOS searches **all 5 connectors in parallel** and returns a unified result set ranked by relevance:
+
+```
+knowledge_search("Acme renewal")
+  → Notion pages       (roadmaps, specs, docs)
+  → Jira issues        (tickets, bugs, stories)
+  → Gmail threads      (emails, threads)
+  → HubSpot deals      (pipeline, revenue)
+  → HubSpot contacts   (people, accounts)
+```
+
+All connectors include exponential-backoff retry and Nova Act fallback for UI automation when APIs are unavailable.
+
+---
+
+## Knowledge System
+
+### Three-tier agent memory
+
+| Tier | What it stores | Lifetime |
+|---|---|---|
+| **Short-term** | Tasks and commands from the current session | Configurable TTL (default 1hr) |
+| **Long-term** | Learned workflows, self-healed corrections | Permanent |
+| **Semantic** | UI element snapshots, embedded workflow definitions | Permanent with freshness decay |
+
+Retrieval uses **hybrid search**: Nova Multimodal cosine similarity first, keyword overlap fallback. Long-term entries apply **exponential freshness decay** (`score * e^(-age / 7days)`) so stale corrections rank below recent ones.
+
+### Semantic workflow matching
+
+Workflows are embedded at registration time (`GENERIC_INDEX` purpose) and queries are embedded at retrieval time (`GENERIC_RETRIEVAL` purpose). This asymmetric pattern is what the Nova embeddings API is designed for — _"push to prod"_ finds a workflow named _"deploy to production"_, something keyword matching cannot do.
 
 ---
 
@@ -108,28 +200,34 @@ Jira · Slack · Gmail · HubSpot · Notion — all with exponential-backoff ret
 ```
 TalOS/
 ├── apps/
-│   ├── api-server/        Fastify REST API (port 3001)
-│   ├── voice-gateway/     Nova Sonic WebSocket gateway (port 3002)
-│   ├── automation-runner/ Nova Act HTTP bridge (port 3003)
-│   └── dashboard/         Next.js web UI (port 3000)
+│   ├── api-server/          Fastify REST API (port 3001)
+│   ├── voice-gateway/       Nova Sonic WebSocket gateway (port 3002)
+│   ├── automation-runner/   Nova Act HTTP bridge (port 3003)
+│   └── dashboard/           Next.js web UI (port 3000)
 ├── packages/
-│   ├── orchestrator/      Core orchestration engine
-│   ├── task-graph/        Topological task scheduling
-│   ├── agent-runtime/     BaseAgent, AgentPool, types
-│   ├── workflow-engine/   Workflow registry + search
-│   └── memory-engine/     Nova embeddings semantic memory
+│   ├── orchestrator/        Core orchestration + task graph planning
+│   ├── task-graph/          Topological sort, parallel batching, cycle detection
+│   ├── agent-runtime/       BaseAgent, AgentPool, type definitions
+│   ├── workflow-engine/     Workflow registry + semantic search
+│   └── memory-engine/       Nova embeddings semantic memory
 ├── agents/
-│   ├── orchestrator-agent/ Nova 2 Pro planning agent
-│   ├── research-agent/     Memory/workflow lookup
-│   ├── execution-agent/    API connectors + Nova Act
-│   └── recovery-agent/     Nova 2 Lite failure diagnosis + self-healing
+│   ├── orchestrator-agent/  Nova 2 Pro planning agent
+│   ├── research-agent/      Memory/workflow lookup
+│   ├── execution-agent/     API connectors + Nova Act routing
+│   └── recovery-agent/      Nova 2 Lite failure diagnosis + self-healing
 ├── connectors/
-│   └── jira/ slack/ gmail/ hubspot/ notion/
-└── services/
-    ├── embeddings-service/ InMemoryStore (swap → OpenSearch)
-    ├── workflow-db/        InMemoryWorkflowStore (swap → DynamoDB)
-    ├── execution-monitor/  Real-time metrics + event tracking
-    └── auth-service/       JWT session management (stub, ready for production)
+│   ├── jira/                Jira Cloud REST API v3
+│   ├── slack/               Slack Web API
+│   ├── gmail/               Gmail API + Google People API (OAuth2)
+│   ├── hubspot/             HubSpot CRM v3
+│   └── notion/              Notion API v1
+├── services/
+│   ├── embeddings-service/  Vector store (InMemory → OpenSearch)
+│   ├── workflow-db/         Workflow store (InMemory → DynamoDB)
+│   ├── execution-monitor/   Real-time metrics + event tracking
+│   └── auth-service/        JWT session management
+└── infra/
+    └── terraform/           DynamoDB, S3, EventBridge, ECS
 ```
 
 ---
@@ -138,7 +236,7 @@ TalOS/
 
 ### Prerequisites
 - Node.js 22+
-- Python 3.10+ with `pip install nova-act`
+- Python 3.10+ with `pip install nova-act` (for browser automation)
 - AWS credentials with Bedrock access (us-east-1)
 
 ### 1. Install dependencies
@@ -149,7 +247,7 @@ npm install
 ### 2. Configure environment
 ```bash
 cp .env.example .env
-# Edit .env — minimum required: AWS credentials (BEDROCK_REGION defaults to us-east-1)
+# Edit .env with your AWS credentials and connector API keys
 ```
 
 ### 3. Start all services
@@ -164,7 +262,7 @@ npx turbo dev
 docker-compose up
 ```
 
-**Option C — Root convenience scripts (4 terminals)**
+**Option C — Individual services (4 terminals)**
 ```bash
 npm run dev:api        # API server (:3001)
 npm run dev:voice      # Voice gateway (:3002)
@@ -172,7 +270,7 @@ npm run dev:runner     # Automation runner (:3003)
 npm run dev:dashboard  # Next.js dashboard (:3000)
 ```
 
-Open **http://localhost:3000** — click the microphone button and speak a command.
+Open **http://localhost:3000** — click the microphone button and speak a command, or type in the text input.
 
 ---
 
@@ -181,27 +279,38 @@ Open **http://localhost:3000** — click the microphone button and speak a comma
 | Variable | Default | Description |
 |---|---|---|
 | `BEDROCK_REGION` | `us-east-1` | AWS region for Bedrock |
-| `NOVA_PRO_MODEL_ID` | `us.amazon.nova-2-pro-v1:0` | **Orchestrator/Planner** — complex reasoning (1M context) |
-| `NOVA_LITE_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | **Recovery Agent** — fast failure diagnosis (1M context) |
-| `NOVA_SONIC_MODEL_ID` | `amazon.nova-2-sonic-v1:0` | **Voice Gateway** — speech-to-speech (300k context) |
-| `NOVA_EMBEDDINGS_MODEL_ID` | `amazon.nova-2-multimodal-embeddings-v1:0` | **Memory Engine** — semantic RAG |
-| `NOVA_EMBEDDING_DIMENSION` | `1024` | Embedding vector dimension (256/384/1024/3072) |
-| `NOVA_SONIC_VOICE` | `tiffany` | Voice ID for Nova Sonic responses |
+| `NOVA_PRO_MODEL_ID` | `us.amazon.nova-2-pro-v1:0` | Orchestrator/Planner — complex reasoning |
+| `NOVA_LITE_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Recovery Agent — fast failure diagnosis |
+| `NOVA_SONIC_MODEL_ID` | `amazon.nova-2-sonic-v1:0` | Voice Gateway — speech-to-speech |
+| `NOVA_EMBEDDINGS_MODEL_ID` | `amazon.nova-2-multimodal-embeddings-v1:0` | Memory Engine — semantic RAG |
+| `NOVA_EMBEDDING_DIMENSION` | `1024` | Embedding dimension (256/384/1024/3072) |
+| `NOVA_SONIC_VOICE` | `tiffany` | Voice ID for spoken responses |
+| `NOVA_ACT_API_KEY` | — | Nova Act API key for browser automation |
 | `AUTOMATION_RUNNER_URL` | `http://localhost:3003` | Nova Act bridge URL |
-| `MAX_CONCURRENT_AGENTS` | `4` | Max parallel agent slots |
+| `MAX_CONCURRENT_AGENTS` | `4` | Max parallel agent execution slots |
 | `TASK_TIMEOUT` | `30000` | Per-task timeout (ms) |
 | `RETRY_LIMIT` | `3` | Orchestrator retry attempts |
 | `API_PORT` | `3001` | API server port |
 | `VOICE_GATEWAY_PORT` | `3002` | Voice WebSocket port |
 
+See [`.env.example`](.env.example) for the full list including connector credentials (Jira, Slack, Gmail, HubSpot, Notion).
+
 ---
 
 ## API Reference
 
-### Submit a task
+### Submit a task (SSE streaming)
 ```
-POST /api/tasks/submit
-{ "input": "Create a Jira ticket for the login bug", "userId": "user-1" }
+POST /api/tasks/stream
+Content-Type: application/json
+
+{ "input": "Create a Jira ticket for the login bug", "sessionId": "uuid" }
+
+→ event: progress
+→ data: { "phase": "planning", "action": "jira_create_ticket", "agentType": "execution" }
+
+→ event: result
+→ data: { "sessionId": "...", "taskGraph": {...}, "status": "completed", "results": [...], "message": "..." }
 ```
 
 ### Search workflows
@@ -210,7 +319,7 @@ POST /api/workflows/search
 { "query": "send slack message", "limit": 5 }
 ```
 
-### Get metrics
+### Metrics
 ```
 GET /api/metrics
 → { totalTasks, completedTasks, failedTasks, avgDuration, successRate }
@@ -218,11 +327,11 @@ GET /api/metrics
 
 ### Approval gate
 ```
-GET  /api/approvals           → pending approvals list
-POST /api/approvals/:id/approve → SSE stream of execution
-POST /api/approvals/:id/reject  → cancellation
-GET  /api/approvals/settings  → { defaultLevel, connectorOverrides }
-PUT  /api/approvals/settings  → update autonomy levels
+GET  /api/approvals               → pending approvals list
+POST /api/approvals/:id/approve   → SSE stream of execution
+POST /api/approvals/:id/reject    → cancellation
+GET  /api/approvals/settings      → { defaultLevel, connectorOverrides }
+PUT  /api/approvals/settings      → update autonomy levels
 ```
 
 ### Health check
@@ -233,51 +342,22 @@ GET /api/health
 
 ---
 
-## Knowledge System
-
-TalOS has a two-layer knowledge architecture:
-
-### Layer 1 — Three-tier agent memory (`packages/memory-engine/`)
-| Tier | What it stores | TTL |
-|---|---|---|
-| **Short-term** | Tasks and commands from the current session | Configurable (default 1hr) |
-| **Long-term** | Learned workflows, self-healed selector corrections | Permanent |
-| **Semantic** | UI element snapshots for browser automation recovery | Permanent with freshness decay |
-
-Retrieval uses **hybrid search**: Nova Multimodal cosine similarity first, keyword overlap fallback. Long-term entries apply **exponential freshness decay** (`score × e^(-age / 7days)`) so stale corrections rank below recent ones even at similar cosine distance.
-
-### Layer 2 — Cross-tool knowledge search (`knowledge_search` action)
-When the user refers to something without naming a specific tool — _"find the Acme renewal doc"_, _"what's the status of the checkout bug"_ — the planner emits a `knowledge_search` node. The execution agent fans out across **all 5 connectors in parallel**, merges results by relevance, and returns a unified `KnowledgeObject[]` with `source`, `objectType`, `externalId`, and `url` for every result.
-
-```
-knowledge_search("Acme renewal")
-  → Notion pages       (roadmaps, specs, docs)
-  → Jira issues        (tickets, bugs, stories)
-  → Gmail threads      (emails, threads)
-  → HubSpot deals      (pipeline, revenue)
-  → HubSpot contacts   (people, accounts)
-```
-
-Results are truncated to ~400 chars each so the model receives focused snippets. Set `KNOWLEDGE_SERVICE_URL` to plug in a dedicated vector store (OpenSearch, Pinecone) — the inline fallback activates automatically when it's absent.
-
-### Semantic workflow matching
-Workflows are embedded at registration time (`GENERIC_INDEX` purpose) and queries are embedded at retrieval time (`GENERIC_RETRIEVAL` purpose). This asymmetric pattern is what the Nova embeddings API is designed for — it means _"push to prod"_ finds a workflow named _"deploy to production"_, something keyword matching cannot do.
-
----
-
 ## Key Design Decisions
 
 **Why an orchestrator-subagent pattern?**
-Separating planning (OrchestratorAgent with **Nova 2 Pro**) from execution (specialist agents) allows each agent to be stateless, independently retryable, and swappable. The task graph engine enables true parallel execution of independent subtasks. The Recovery Agent uses **Nova 2 Lite** — it only needs fast structured JSON inference, not Pro-level reasoning, making it significantly cheaper per failure event. Both Pro and Lite offer a massive 1M token context window.
+Separating planning (Nova 2 Pro) from execution (specialist agents) makes each agent stateless, independently retryable, and swappable. The task graph engine enables true parallel execution of independent subtasks — something a single-agent architecture cannot do efficiently.
+
+**Why Nova 2 Lite for recovery instead of Pro?**
+Recovery needs fast structured JSON inference, not deep reasoning. Lite's low latency and 1M-token context make it ideal for high-frequency retry loops where every millisecond counts. It's also significantly cheaper per failure event.
 
 **Why asymmetric embedding purposes?**
-Nova Multimodal Embeddings support distinct `GENERIC_INDEX` (optimised for storage) and `GENERIC_RETRIEVAL` (optimised for querying) purposes. Using them asymmetrically — index at write time, retrieve at query time — is the correct pattern per AWS docs and improves recall on paraphrase queries.
+Nova Multimodal Embeddings support distinct `GENERIC_INDEX` (optimized for storage) and `GENERIC_RETRIEVAL` (optimized for querying) purposes. Using them asymmetrically — index at write time, retrieve at query time — is the correct pattern per AWS docs and improves recall on paraphrase queries.
 
 **Why a Python subprocess for Nova Act?**
-Nova Act is Python-only. Rather than limiting the entire backend to Python, we bridge via HTTP: the TypeScript ExecutionAgent POSTs actions to the AutomationRunner microservice, which spawns the Python process. This keeps the core TypeScript architecture intact while gaining full Nova Act capability.
+Nova Act is Python-only. Rather than limiting the entire backend to Python, we bridge via JSON over stdin/stdout: the TypeScript ExecutionAgent sends commands to the Python process, which drives a real browser via Playwright. This keeps the core TypeScript architecture intact while gaining full Nova Act capability.
 
 **Why InMemory stores?**
-For hackathon demo velocity — the interfaces are identical to DynamoDB/OpenSearch, so swapping is a one-line config change. The `InMemoryStore` and `InMemoryWorkflowStore` are production-interface-compatible.
+For hackathon demo velocity. The interfaces are identical to DynamoDB/OpenSearch, so swapping is a one-line config change. All stores implement the same abstract interface.
 
 ---
 
@@ -288,34 +368,32 @@ For hackathon demo velocity — the interfaces are identical to DynamoDB/OpenSea
 | Memory store | InMemoryStore | Amazon OpenSearch |
 | Workflow DB | InMemoryWorkflowStore | Amazon DynamoDB |
 | Task queue | In-process | Amazon SQS |
-| Deployment | Local processes | Amazon ECS (Terraform in `/infra`) |
+| Deployment | Local / Docker Compose | Amazon ECS (Terraform in `/infra`) |
 
-Terraform configurations for DynamoDB, S3, EventBridge, and ECS are in [`/infra/`](./infra/).
-
----
-
-## Built With
-
-- **Amazon Bedrock** — Nova 2 Pro, Nova 2 Lite, Nova 2 Sonic, Nova 2 Multimodal Embeddings, Nova Act
-- **TypeScript** + Turborepo monorepo
-- **Fastify** — API server and automation runner
-- **Next.js** — Dashboard
-- **Web Audio API** — Real-time PCM mic capture for Nova Sonic
+Terraform configurations for DynamoDB, S3, EventBridge, and ECS are in [`infra/terraform/`](./infra/terraform/).
 
 ---
 
 ## CI/CD
 
-GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on every push and PR:
-1. `npx turbo build` — compile all packages
-2. `npx turbo test` — Vitest test suites across 6 packages
-3. `npx turbo lint` — ESLint 9 flat config
+GitHub Actions pipeline ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push and PR:
+
+1. **Build** — `npx turbo build` compiles all 20+ packages
+2. **Test** — `npx turbo test` runs Vitest suites across all packages
+3. **Lint** — `npx turbo lint` enforces ESLint 9 flat config
 
 ---
 
-## Deployment
+## Built With
 
-Deployed on Railway (4 services: dashboard, api-server, voice-gateway, automation-runner). See demo video for live walkthrough.
+- **Amazon Bedrock** — Nova 2 Pro, Nova 2 Lite, Nova 2 Sonic, Nova Multimodal Embeddings
+- **Amazon Nova Act** — Natural language browser automation (Python SDK)
+- **TypeScript** — Monorepo managed by Turborepo
+- **Fastify** — API server, voice gateway, automation runner
+- **Next.js 15 + React 19** — Dashboard with real-time agent visualization
+- **Web Audio API** — Real-time PCM mic capture and audio playback for Nova Sonic
+- **Zod** — Runtime schema validation across all connector actions
+- **Vitest** — Test framework across all packages
 
 ---
 
